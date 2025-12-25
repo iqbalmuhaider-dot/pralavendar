@@ -380,27 +380,80 @@
             doc.save("Laporan_PIBG.pdf");
         };
         
+        window.exportClothingCsv = () => {
+             const data = [["Nama Murid", "Jenis Baju", "Tag Nama"]];
+             // Filter for clothing items (keyword match)
+             const clothingKeywords = ['BAJU', 'TSHIRT', 'T-SHIRT', 'VEST', 'SELUAR', 'KAIN', 'SUKAN', 'UNIFORM'];
+             
+             window.orders.forEach(o => {
+                 if(o.items) {
+                     Object.entries(o.items).forEach(([itemId, qty]) => {
+                         const item = [...window.itemsA, ...window.itemsB].find(i => i.id === itemId);
+                         if(item) {
+                             const itemNameUpper = item.name.toUpperCase();
+                             if(clothingKeywords.some(kw => itemNameUpper.includes(kw))) {
+                                 // Add row per item quantity or just per item type? 
+                                 // Usually separate row per item type (showing Qty if > 1)
+                                 const itemDisplay = qty > 1 ? `${item.name} (x${qty})` : item.name;
+                                 data.push([`"${o.name}"`, `"${itemDisplay}"`, `"${o.tagName || '-'}"`]);
+                             }
+                         }
+                     });
+                 }
+             });
+             window.generateCSV(data, "Senarai_Tempahan_Baju.csv");
+        };
+
+        window.exportClothingPdf = () => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            doc.text("Senarai Tempahan Baju & Uniform", 14, 20);
+            
+            const body = [];
+            const clothingKeywords = ['BAJU', 'TSHIRT', 'T-SHIRT', 'VEST', 'SELUAR', 'KAIN', 'SUKAN', 'UNIFORM'];
+            
+            window.orders.forEach(o => {
+                 if(o.items) {
+                     Object.entries(o.items).forEach(([itemId, qty]) => {
+                         const item = [...window.itemsA, ...window.itemsB].find(i => i.id === itemId);
+                         if(item) {
+                             const itemNameUpper = item.name.toUpperCase();
+                             if(clothingKeywords.some(kw => itemNameUpper.includes(kw))) {
+                                 const itemDisplay = qty > 1 ? `${item.name} (x${qty})` : item.name;
+                                 body.push([o.name, itemDisplay, o.tagName || '-']);
+                             }
+                         }
+                     });
+                 }
+            });
+            
+            doc.autoTable({ head: [['Nama Murid', 'Jenis Baju/Item', 'Tag Nama']], body: body, startY: 30 });
+            doc.save("Senarai_Tempahan_Baju.pdf");
+        };
+
         window.exportNametagCsv = () => {
-             const data = [["Nama Murid", "Teks Tag", "Status"]];
+             const data = [["Nama Murid", "Tag Nama"]];
+             // Logic: Check if user ordered ANY nametag item OR just list all users with a tagName?
+             // Safest is to check if they bought an item marked 'isNametag'
              const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
              window.orders.forEach(o => {
                  if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
-                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, o.tagStatus ? "SIAP" : "PROSES"]);
+                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`]);
                  }
              });
-             window.generateCSV(data, "Laporan_Nametag.csv");
+             window.generateCSV(data, "Senarai_Nametag.csv");
         };
 
         window.exportNametagPdf = () => {
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
-            doc.text("Laporan Tempahan Nametag", 14, 20);
+            doc.text("Senarai Tempahan Nametag", 14, 20);
             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
             const body = window.orders
                 .filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)))
-                .map(o => [o.name, o.tagName || '-', o.tagStatus ? "SIAP" : "PROSES"]);
-            doc.autoTable({ head: [['Nama Murid', 'Teks Tag', 'Status']], body: body, startY: 30 });
-            doc.save("Laporan_Nametag.pdf");
+                .map(o => [o.name, o.tagName || '-']);
+            doc.autoTable({ head: [['Nama Murid', 'Teks Tag Nama']], body: body, startY: 30 });
+            doc.save("Senarai_Nametag.pdf");
         };
 
         // --- ADMIN CORE ---
@@ -424,6 +477,7 @@
             if(tab === 'orders') window.renderAdminOrders();
             if(tab === 'inventory') window.renderAdminInventory();
             if(tab === 'pibg') window.renderAdminPibg();
+            if(tab === 'clothing') window.renderAdminClothing();
             if(tab === 'nametag') window.renderAdminNametags();
             if(tab === 'log') window.renderAdminLogs();
         };
@@ -492,6 +546,46 @@
              `).join('') : '<tr><td colspan="4" class="p-6 text-center text-slate-400">Tiada rekod PIBG.</td></tr>';
         };
 
+        // NEW: Clothing Report Logic
+        window.renderAdminClothing = () => {
+             const tb = document.getElementById('adm-clothing-body');
+             if(!tb) return;
+             
+             // Keywords to identify clothing items
+             const clothingKeywords = ['BAJU', 'TSHIRT', 'T-SHIRT', 'VEST', 'SELUAR', 'KAIN', 'SUKAN', 'UNIFORM'];
+             const rows = [];
+
+             window.orders.forEach(o => {
+                 if(o.items) {
+                     Object.entries(o.items).forEach(([itemId, qty]) => {
+                         // Find item details
+                         const item = [...window.itemsA, ...window.itemsB].find(i => i.id === itemId);
+                         if(item) {
+                             const itemNameUpper = item.name.toUpperCase();
+                             // Check if item is clothing
+                             if(clothingKeywords.some(kw => itemNameUpper.includes(kw))) {
+                                 rows.push({
+                                     student: o.name,
+                                     item: item.name,
+                                     qty: qty,
+                                     tagName: o.tagName || '-'
+                                 });
+                             }
+                         }
+                     });
+                 }
+             });
+
+             tb.innerHTML = rows.length ? rows.map(r => `
+                <tr class="border-b hover:bg-blue-50 text-sm">
+                    <td class="p-3 uppercase font-bold">${r.student}</td>
+                    <td class="p-3 uppercase">${r.item} <span class="text-xs font-bold text-slate-400">x${r.qty}</span></td>
+                    <td class="p-3 uppercase font-mono text-xs font-bold text-blue-700">${r.tagName}</td>
+                </tr>
+             `).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan baju ditemui.</td></tr>';
+        };
+
+        // MODIFIED: Nametag Report Logic (Simplified Columns)
         window.renderAdminNametags = () => {
              const tb = document.getElementById('adm-tag-body');
              if(!tb) return;
@@ -501,9 +595,8 @@
                 <tr class="border-b hover:bg-purple-50 text-sm">
                     <td class="p-3 uppercase font-medium">${o.name}</td>
                     <td class="p-3 font-bold uppercase text-purple-700">${o.tagName||'-'}</td>
-                    <td class="p-3 text-center"><button onclick="window.updateTagStatus('${o.id}', ${o.tagStatus})" class="px-2 py-1 rounded text-[10px] font-bold text-white ${o.tagStatus?'bg-green-500':'bg-amber-500'}">${o.tagStatus?'SIAP':'PROSES'}</button></td>
                 </tr>
-             `).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
+             `).join('') : '<tr><td colspan="2" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
         };
 
         window.renderAdminLogs = () => {
@@ -842,6 +935,12 @@
                     <span class="hidden md:inline ml-3 text-sm font-medium">Yuran PIBG</span>
                 </button>
 
+                <!-- NEW: Clothing Report -->
+                <button onclick="window.setAdminTab('clothing')" id="nav-clothing" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
+                    <i class="fas fa-tshirt text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Tempahan Baju</span>
+                </button>
+
                 <!-- Nametag -->
                 <button onclick="window.setAdminTab('nametag')" id="nav-nametag" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
                     <i class="fas fa-id-badge text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
@@ -887,9 +986,33 @@
                 <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Yuran PIBG</h2><div class="flex gap-2"><button onclick="window.exportPibgCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportPibgPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
                 <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-yellow-100 text-yellow-900 border-b border-yellow-200 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Nama Penjaga</th><th class="p-4 text-center">Bayaran (RM)</th><th class="p-4 text-center">Status Bayaran</th></tr></thead><tbody id="adm-pibg-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
+            
+            <!-- NEW: Clothing Report Tab -->
+            <div id="adm-clothing" class="hidden admin-tab animate-fadeUp">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-slate-800">Senarai Tempahan Baju</h2>
+                     <div class="flex gap-2">
+                        <button onclick="window.exportClothingCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button>
+                        <button onclick="window.exportClothingPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button>
+                    </div>
+                </div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                    <table class="w-full text-sm text-left">
+                        <thead class="bg-blue-50 text-blue-900 border-b border-blue-100 font-bold text-xs uppercase">
+                            <tr>
+                                <th class="p-4">Nama Murid</th>
+                                <th class="p-4">Jenis Baju / Item</th>
+                                <th class="p-4">Tag Nama (Rujukan)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="adm-clothing-body" class="divide-y divide-slate-100"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <div id="adm-nametag" class="hidden admin-tab animate-fadeUp">
                 <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Tempahan Nametag</h2><div class="flex gap-2"><button onclick="window.exportNametagCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Status</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
             <div id="adm-log" class="hidden admin-tab animate-fadeUp"><h2 class="text-2xl font-bold text-slate-800 mb-6">Log Aktiviti</h2><div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 font-bold text-xs uppercase text-slate-500"><tr><th class="p-4 w-40">Masa</th><th class="p-4 w-32">Aksi</th><th class="p-4">Perincian</th></tr></thead><tbody id="adm-log-body" class="divide-y divide-slate-100"></tbody></table></div></div>
         </main>
