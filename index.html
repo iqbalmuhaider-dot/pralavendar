@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="ms">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SISTEM YURAN & INVENTORI PRASEKOLAH LAVENDER 2026</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@500;600;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- PDF & Excel Support -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        heading: ['Poppins', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: { 50: '#f5f3ff', 100: '#ede9fe', 500: '#8b5cf6', 600: '#7c3aed', 700: '#6d28d9', 800: '#5b21b6', 900: '#4c1d95' }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, deleteDoc, onSnapshot, query, doc, updateDoc, where, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- KONFIGURASI FIREBASE ---
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+            apiKey: "AIzaSyD-A55Mn0L1R6jgbtqpNBJbhcuB5LRs9_g",
+            authDomain: "eshop-50e45.firebaseapp.com",
+            projectId: "eshop-50e45",
+            storageBucket: "eshop-50e45.firebasestorage.app",
+            messagingSenderId: "71035382592",
+            appId: "1:71035382592:web:71483077d43bf76125e8a5",
+            measurementId: "G-3EEH8B12NL"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const googleProvider = new GoogleAuthProvider();
+
+        // --- PENGGUNAAN ROOT PATHS ---
+        const itemsColl = collection(db, 'book_items');
+        const ordersColl = collection(db, 'book_orders');
+        
+        console.log("Sistem beroperasi menggunakan ROOT collections: 'book_items' & 'book_orders'");
+
+        // Global State
+        window.itemsA = [];
+        window.itemsB = [];
+        window.orders = [];
+        window.currentReceipt = null;
+        window.cartState = {}; 
+        window.chartP = null;
+        window.selectedOrderIdForPayment = null;
+        window.isAdminUser = false;
+
+        // --- NAVIGATION ---
+        window.goHome = () => {
+            ['user-view', 'check-view', 'admin-view', 'receiptView'].forEach(id => document.getElementById(id).classList.add('hidden'));
+            document.getElementById('landing-view').classList.remove('hidden');
+            document.getElementById('mainNavbar').classList.remove('hidden');
+            document.getElementById('mobileActionBar').classList.add('hidden');
+        };
+
+        window.startOrder = () => {
+            document.getElementById('landing-view').classList.add('hidden');
+            document.getElementById('user-view').classList.remove('hidden');
+            window.safeNavigate('section-info');
+            document.getElementById('mobileActionBar').classList.remove('hidden');
+        };
+
+        window.startCheck = () => {
+            document.getElementById('landing-view').classList.add('hidden');
+            document.getElementById('check-view').classList.remove('hidden');
+        };
+
+        window.safeNavigate = (id) => {
+            ['section-info', 'section-a', 'section-b', 'section-d'].forEach(sid => document.getElementById(sid).classList.add('hidden'));
+            const target = document.getElementById(id);
+            if(target) {
+                target.classList.remove('hidden');
+                target.classList.add('animate-fadeUp');
+            }
+            window.scrollTo({top: 0, behavior: 'smooth'});
+            if(id === 'section-d') window.renderSummary();
+            
+            // Update Stepper
+            const steps = ['info', 'a', 'b', 'd'];
+            const activeIdx = {'section-info':0, 'section-a':1, 'section-b':2, 'section-d':3}[id];
+            const pb = document.getElementById('progress-bar-fill');
+            if(pb) pb.style.width = `${(activeIdx / 3) * 100}%`;
+            
+            steps.forEach((key, idx) => {
+                const circle = document.querySelector(`#step-${key} .step-circle`);
+                const label = document.querySelector(`#step-${key} .step-label`);
+                if(idx <= activeIdx) {
+                    circle.classList.remove('bg-white', 'text-slate-300');
+                    circle.classList.add('bg-brand-600', 'text-white', 'border-brand-600');
+                    label.classList.add('text-brand-700');
+                } else {
+                    circle.classList.add('bg-white', 'text-slate-300');
+                    circle.classList.remove('bg-brand-600', 'text-white', 'border-brand-600');
+                    label.classList.remove('text-brand-700');
+                }
+            });
+        };
+
+        window.nextSection = (targetId) => {
+            if(targetId === 'section-a') {
+                if(!document.getElementById('studentName').value || !document.getElementById('parentName').value || !document.getElementById('parentPhone').value) {
+                    alert("Sila lengkapkan semua butiran."); return;
+                }
+            }
+            window.safeNavigate(targetId);
+        };
+
+        // --- ORDER LOGIC ---
+        window.calcAll = () => {
+            const totalAEl = document.getElementById('totalA');
+            if (!totalAEl) return;
+            let total = parseFloat(totalAEl.innerText) || 0;
+            window.cartState = {};
+            
+            document.querySelectorAll('.qty-input').forEach(inp => {
+                const qty = parseInt(inp.value) || 0;
+                const price = parseFloat(inp.dataset.price);
+                const id = inp.dataset.id;
+                
+                if (qty > 0) {
+                    window.cartState[id] = qty;
+                    total += (qty * price);
+                    document.getElementById(`tagInput-${id}`)?.classList.remove('hidden');
+                } else {
+                    document.getElementById(`tagInput-${id}`)?.classList.add('hidden');
+                }
+                
+                const subEl = document.getElementById(`sub-${id}`);
+                if(subEl) subEl.innerText = (qty * price).toFixed(2);
+            });
+            
+            const totalStr = `RM ${total.toFixed(2)}`;
+            if(document.getElementById('grandTotalDisplay')) document.getElementById('grandTotalDisplay').innerText = totalStr;
+            if(document.getElementById('mobileGrandTotal')) document.getElementById('mobileGrandTotal').innerText = totalStr;
+        };
+
+        window.renderUserForm = () => {
+            const tA = document.getElementById('tbody-a');
+            const tB = document.getElementById('tbody-b');
+            const totalAEl = document.getElementById('totalA');
+            
+            // Kategori A
+            if(window.itemsA.length) {
+                tA.innerHTML = window.itemsA.map((i, idx) => `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
+                        <td class="p-4"><span class="text-xs font-bold text-slate-400 mr-2">${idx + 1}.</span><span class="font-medium text-slate-700 uppercase">${i.name}</span></td>
+                        <td class="p-4 text-center text-sm text-slate-500">RM ${i.price.toFixed(2)}</td>
+                        <td class="p-4 text-center"><span class="bg-brand-50 text-brand-700 px-2 py-1 rounded text-xs font-bold">1 Unit</span></td>
+                        <td class="p-4 text-right font-bold text-slate-700">RM ${i.price.toFixed(2)}</td>
+                    </tr>`).join('');
+                if(totalAEl) totalAEl.innerText = window.itemsA.reduce((a,b)=>a+b.price,0).toFixed(2);
+            } else tA.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item wajib.</td></tr>';
+            
+            // Kategori B
+            if(window.itemsB.length) {
+                tB.innerHTML = window.itemsB.map(i => `
+                    <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
+                        <td class="p-4">
+                            <div class="font-medium text-slate-700 uppercase">${i.name}</div>
+                            ${i.isNametag ? `<div id="tagInput-${i.id}" class="hidden mt-2"><input type="text" id="tagNameInput-${i.id}" class="w-full border p-2 text-xs rounded uppercase" placeholder="NAMA PADA TAG"></div>` : ''}
+                        </td>
+                        <td class="p-4 text-center text-sm text-slate-500">RM ${i.price.toFixed(2)}</td>
+                        <td class="p-4 text-center">
+                            <div class="inline-flex border rounded bg-white">
+                                <button onclick="this.nextElementSibling.stepDown();this.nextElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">-</button>
+                                <input type="number" min="0" value="0" data-id="${i.id}" data-price="${i.price}" class="qty-input w-10 text-center border-x py-1 text-sm outline-none" onchange="window.calcAll()" oninput="window.calcAll()">
+                                <button onclick="this.previousElementSibling.stepUp();this.previousElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">+</button>
+                            </div>
+                        </td>
+                        <td class="p-4 text-right font-bold text-slate-700" id="sub-${i.id}">0.00</td>
+                    </tr>`).join('');
+            } else tB.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item pilihan.</td></tr>';
+            window.calcAll();
+        };
+
+        window.renderSummary = () => {
+            const tbody = document.getElementById('summary-tbody');
+            if(!tbody) return;
+            tbody.innerHTML = '';
+            
+            if (window.itemsA.length > 0) {
+                tbody.innerHTML += `<tr><td colspan="3" class="bg-slate-50 p-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Item Wajib</td></tr>`;
+                window.itemsA.forEach(i => { tbody.innerHTML += `<tr class="border-b border-slate-50 text-sm"><td class="py-2 pl-2 uppercase">${i.name}</td><td class="py-2 text-center">1</td><td class="py-2 pr-2 text-right font-medium">RM ${i.price.toFixed(2)}</td></tr>`; });
+            }
+            
+            const selectedItemsB = window.itemsB.filter(i => window.cartState[i.id] > 0);
+            if(selectedItemsB.length > 0) {
+                tbody.innerHTML += `<tr><td colspan="3" class="bg-slate-50 p-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider mt-2">Item Pilihan</td></tr>`;
+                selectedItemsB.forEach(item => {
+                    const qty = window.cartState[item.id];
+                    let meta = '';
+                    if(item.isNametag) {
+                        const val = document.getElementById(`tagNameInput-${item.id}`)?.value.toUpperCase() || 'TIADA NAMA';
+                        meta = `<div class="text-[10px] text-purple-600 font-bold bg-purple-50 inline-block px-1 rounded border border-purple-100 mt-1">${val}</div>`;
+                    }
+                    tbody.innerHTML += `<tr class="border-b border-slate-50 text-sm"><td class="py-2 pl-2"><div class="uppercase">${item.name}</div>${meta}</td><td class="py-2 text-center">${qty}</td><td class="py-2 pr-2 text-right font-medium">RM ${(item.price * qty).toFixed(2)}</td></tr>`;
+                });
+            }
+        };
+
+        window.submitOrder = async () => {
+            // FIX: Pastikan pengguna disahkan (Login) sebelum hantar data
+            // Ralat "Permission denied" biasanya sebab pengguna belum login (Anonymous atau Admin)
+            if (!auth.currentUser) {
+                try {
+                    await signInAnonymously(auth);
+                } catch (authError) {
+                    alert("Ralat Sistem: Tidak dapat log masuk (Anonymous Auth). Sila pastikan 'Anonymous' diaktifkan di Firebase Console.\n\nError: " + authError.message);
+                    return;
+                }
+            }
+
+            const name = document.getElementById('studentName').value.toUpperCase();
+            const parent = document.getElementById('parentName').value.toUpperCase();
+            const phone = document.getElementById('parentPhone').value;
+            const total = parseFloat(document.getElementById('grandTotalDisplay').innerText.replace('RM ', ''));
+            if(!name || !parent || !phone) { alert("Sila isi semua maklumat."); return; }
+
+            let items = {};
+            Object.entries(window.cartState).forEach(([id, qty]) => { if(qty > 0) items[id] = qty; });
+
+            const tagItems = window.itemsB.filter(i => i.isNametag);
+            let tagName = "";
+            for(let t of tagItems) {
+                if(items[t.id]) {
+                    tagName = document.getElementById(`tagNameInput-${t.id}`).value.toUpperCase();
+                    if(!tagName) { alert("Sila isi Nama pada Tag."); return; }
+                    break; 
+                }
+            }
+            
+            const orderData = { date: new Date().toLocaleDateString('ms-MY'), timestamp: Date.now(), name, parent, phone, total, paid: 0, items, tagName, tagStatus: false };
+            try {
+                // Menggunakan ordersColl yang telah ditetapkan kepada 'book_orders'
+                const ref = await addDoc(ordersColl, orderData);
+                window.currentReceipt = { id: ref.id, ...orderData };
+                window.renderReceiptView(window.currentReceipt);
+            } catch(e) { 
+                console.error(e);
+                alert("Gagal menghantar tempahan!\n\nKemungkinan Punca:\n1. 'Anonymous Auth' belum ON di Firebase Console.\n2. Rules Firestore tidak membenarkan akses.\n\nKod Ralat: " + e.message); 
+            }
+        };
+
+        // --- CHECK STATUS ---
+        window.doCheckStatus = async () => {
+            const phone = document.getElementById('checkPhone').value.trim();
+            const resDiv = document.getElementById('checkResults');
+            if(!phone) { alert("Masukkan No. Telefon."); return; }
+            resDiv.innerHTML = '<p class="text-center text-slate-400 py-4">Sedang mencari...</p>';
+            
+            try {
+                // Menggunakan ordersColl yang telah ditetapkan kepada 'book_orders'
+                const q = query(ordersColl, where("phone", "==", phone));
+                const snap = await getDocs(q);
+                if(snap.empty) { resDiv.innerHTML = '<div class="text-center py-4 bg-slate-50 rounded">Tiada rekod dijumpai.</div>'; return; }
+                
+                let html = '<div class="space-y-3">';
+                snap.forEach(doc => {
+                    const d = doc.data();
+                    const baki = d.total - (d.paid || 0);
+                    const statusClass = baki <= 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
+                    const statusText = baki <= 0 ? 'SELESAI' : 'TERTUNGGAK';
+                    const dataStr = JSON.stringify({id: doc.id, ...d}).replace(/"/g, '&quot;');
+                    
+                    html += `
+                    <div class="bg-white p-4 rounded-xl border shadow-sm">
+                        <div class="flex justify-between mb-2">
+                            <h4 class="font-bold text-slate-800 uppercase">${d.name}</h4>
+                            <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${statusText}</span>
+                        </div>
+                        <p class="text-xs text-slate-500 mb-3">Jumlah: RM ${d.total.toFixed(2)} | Dibayar: RM ${(d.paid||0).toFixed(2)}</p>
+                        <button onclick='window.viewReceiptDirect(${dataStr})' class="w-full bg-brand-600 text-white text-xs font-bold py-2 rounded-lg">LIHAT INVOIS</button>
+                    </div>`;
+                });
+                resDiv.innerHTML = html + '</div>';
+            } catch(e) { resDiv.innerHTML = 'Ralat sistem.'; console.error(e); }
+        };
+
+        // --- RECEIPT VIEW ---
+        window.viewReceiptDirect = (data) => window.renderReceiptView(data);
+        window.viewReceiptFromAdmin = (id) => { const o = window.orders.find(x => x.id === id); if(o) window.renderReceiptView(o); };
+        
+        window.renderReceiptView = (data) => {
+            ['landing-view', 'user-view', 'check-view', 'admin-view', 'mainNavbar'].forEach(id => document.getElementById(id).classList.add('hidden'));
+            document.getElementById('receiptView').classList.remove('hidden');
+            
+            document.getElementById('r-name').innerText = data.name;
+            document.getElementById('r-parent').innerText = data.parent;
+            document.getElementById('r-date').innerText = data.date;
+            document.getElementById('r-id').innerText = data.id.substring(0,8).toUpperCase();
+            
+            const bal = data.total - (data.paid || 0);
+            document.getElementById('doc-title').innerText = bal <= 0 ? "RESIT RASMI" : "INVOIS";
+            
+            const tb = document.getElementById('r-body');
+            tb.innerHTML = '';
+            
+            // Render Items
+            window.itemsA.forEach(i => { tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${i.name}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">1</td><td class="border-b py-2 text-right">${i.price.toFixed(2)}</td></tr>`; });
+            if(data.items) {
+                Object.entries(data.items).forEach(([id, qty]) => {
+                    const i = window.itemsB.find(x => x.id === id);
+                    if(i) {
+                        let n = i.name; if(i.isNametag && data.tagName) n+=` (${data.tagName})`;
+                        tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${n}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">${qty}</td><td class="border-b py-2 text-right">${(i.price*qty).toFixed(2)}</td></tr>`;
+                    }
+                });
+            }
+            
+            document.getElementById('r-total').innerText = `RM ${data.total.toFixed(2)}`;
+            document.getElementById('r-paid').innerText = `RM ${(data.paid||0).toFixed(2)}`;
+            document.getElementById('r-balance').innerText = `RM ${bal.toFixed(2)}`;
+            document.getElementById('r-balance-label').innerText = bal > 0 ? "BAKI PERLU DIBAYAR" : "BAKI SIFAR";
+        };
+
+        window.closeReceipt = () => {
+            document.getElementById('receiptView').classList.add('hidden');
+            if(window.isAdminUser) {
+                document.getElementById('admin-view').classList.remove('hidden');
+            } else if(document.getElementById('checkResults').innerHTML !== '') {
+                document.getElementById('check-view').classList.remove('hidden');
+                document.getElementById('mainNavbar').classList.remove('hidden');
+            } else {
+                window.goHome();
+            }
+        };
+
+        window.printReceipt = () => window.print();
+
+        // --- EXPORT FUNCTIONS ---
+        window.generateCSV = (data, filename) => {
+            const csvContent = "data:text/csv;charset=utf-8," + data.map(e => e.join(",")).join("\n");
+            const link = document.createElement("a");
+            link.setAttribute("href", encodeURI(csvContent));
+            link.setAttribute("download", filename);
+            document.body.appendChild(link); link.click(); document.body.removeChild(link);
+        };
+
+        window.exportPibgCsv = () => {
+            const data = [["Nama Murid", "Nama Penjaga", "Bayaran (RM)", "Status"]];
+            const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
+            window.orders.forEach(o => {
+                if(o.items && Object.keys(o.items).some(k => pibgItems.includes(k))) {
+                     data.push([`"${o.name}"`, `"${o.parent}"`, o.paid.toFixed(2), (o.paid>=o.total ? "SELESAI" : "BELUM")]);
+                }
+            });
+            window.generateCSV(data, "Laporan_PIBG.csv");
+        };
+
+        window.exportPibgPdf = () => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            doc.text("Laporan Yuran PIBG 2026", 14, 20);
+            const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
+            const body = window.orders
+                .filter(o => o.items && Object.keys(o.items).some(k => pibgItems.includes(k)))
+                .map(o => [o.name, o.parent, `RM ${o.paid.toFixed(2)}`, (o.paid >= o.total ? "SELESAI" : "BELUM")]);
+            doc.autoTable({ head: [['Nama Murid', 'Penjaga', 'Bayaran', 'Status']], body: body, startY: 30 });
+            doc.save("Laporan_PIBG.pdf");
+        };
+        
+        window.exportNametagCsv = () => {
+             const data = [["Nama Murid", "Teks Tag", "Status"]];
+             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+             window.orders.forEach(o => {
+                 if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
+                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, o.tagStatus ? "SIAP" : "PROSES"]);
+                 }
+             });
+             window.generateCSV(data, "Laporan_Nametag.csv");
+        };
+
+        window.exportNametagPdf = () => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            doc.text("Laporan Tempahan Nametag", 14, 20);
+            const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+            const body = window.orders
+                .filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)))
+                .map(o => [o.name, o.tagName || '-', o.tagStatus ? "SIAP" : "PROSES"]);
+            doc.autoTable({ head: [['Nama Murid', 'Teks Tag', 'Status']], body: body, startY: 30 });
+            doc.save("Laporan_Nametag.pdf");
+        };
+
+        // --- ADMIN CORE ---
+        window.switchView = (view) => {
+             document.getElementById('landing-view').classList.add('hidden');
+             const nav = document.getElementById('mainNavbar');
+             if(view === 'admin') {
+                 document.getElementById('user-view').classList.add('hidden');
+                 document.getElementById('admin-view').classList.remove('hidden');
+                 nav.classList.add('hidden');
+                 window.setAdminTab('dash');
+             } else window.goHome();
+        };
+
+        window.setAdminTab = (tab) => {
+            document.querySelectorAll('.admin-tab').forEach(e => e.classList.add('hidden'));
+            document.querySelectorAll('.admin-nav-item').forEach(e => e.classList.remove('bg-slate-800', 'text-white'));
+            document.getElementById(`adm-${tab}`)?.classList.remove('hidden');
+            document.getElementById(`nav-${tab}`)?.classList.add('bg-slate-800', 'text-white');
+            if(tab === 'dash') window.renderAdminDashboard();
+            if(tab === 'orders') window.renderAdminOrders();
+            if(tab === 'inventory') window.renderAdminInventory();
+            if(tab === 'pibg') window.renderAdminPibg();
+            if(tab === 'nametag') window.renderAdminNametags();
+            if(tab === 'log') window.renderAdminLogs();
+        };
+
+        window.renderAdminDashboard = () => {
+             let rev=0, pend=0;
+             window.orders.forEach(o => { rev += (o.paid||0); if(o.total > (o.paid||0)) pend += (o.total - (o.paid||0)); });
+             document.getElementById('d-revenue').innerText = `RM ${rev.toFixed(2)}`;
+             document.getElementById('d-count').innerText = window.orders.length;
+             document.getElementById('d-pending').innerText = `RM ${pend.toFixed(2)}`;
+             
+             const ctx = document.getElementById('chartPayment');
+             if(ctx) {
+                 if(window.chartP) window.chartP.destroy();
+                 const full = window.orders.filter(o => (o.paid||0) >= o.total).length;
+                 const none = window.orders.length - full;
+                 window.chartP = new Chart(ctx.getContext('2d'), {
+                     type: 'doughnut',
+                     data: { labels: ['Selesai','Belum'], datasets: [{ data: [full, none], backgroundColor: ['#10b981','#ef4444'] }] },
+                     options: { responsive:true, maintainAspectRatio:false, plugins: { legend: { position: 'bottom' } } }
+                 });
+             }
+        };
+
+        window.renderAdminOrders = () => {
+            const tb = document.getElementById('adm-orders-body');
+            if(!tb) return;
+            tb.innerHTML = window.orders.sort((a,b)=> b.timestamp - a.timestamp).map(o => `
+                <tr class="border-b hover:bg-slate-50 text-sm">
+                    <td class="p-3"><input type="checkbox" class="order-checkbox rounded border-slate-300" data-id="${o.id}"></td>
+                    <td class="p-3"><div class="font-bold uppercase">${o.name}</div><div class="text-xs text-slate-500">${o.phone}</div></td>
+                    <td class="p-3 text-center font-bold">RM ${o.total.toFixed(2)}</td>
+                    <td class="p-3 text-center"><div class="text-xs font-bold ${o.paid>=o.total?'text-green-600':'text-red-600'}">${o.paid>=o.total?'LUNAS':'TUNGGAK'}</div><div class="text-xs text-slate-400">Dibayar: RM ${(o.paid||0).toFixed(2)}</div></td>
+                    <td class="p-3 text-center"><button onclick="window.openPaymentModal('${o.id}', ${o.paid||0}, ${o.total})" class="text-brand-600 hover:bg-brand-50 p-1 rounded"><i class="fas fa-edit"></i></button><button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1"><i class="fas fa-eye"></i></button></td>
+                </tr>
+            `).join('');
+        };
+
+        window.renderAdminInventory = () => {
+            const tb = document.getElementById('adm-inv-body');
+            if(!tb) return;
+            const all = [...window.itemsA, ...window.itemsB].sort((a,b)=>(a.order||0)-(b.order||0));
+            tb.innerHTML = all.map(i => `
+                <tr class="border-b hover:bg-slate-50 text-sm">
+                    <td class="p-3"><input type="checkbox" class="inv-checkbox rounded border-slate-300" data-id="${i.id}"></td>
+                    <td class="p-3 uppercase font-medium">${i.name}</td>
+                    <td class="p-3 text-center text-xs font-bold">${i.category==='A'?'WAJIB':'PILIHAN'}</td>
+                    <td class="p-3 text-center">RM ${i.price.toFixed(2)}</td>
+                    <td class="p-3 text-center"><button onclick="window.deleteInventoryItem('${i.id}')" class="text-red-500 hover:bg-red-50 p-2 rounded"><i class="fas fa-trash"></i></button></td>
+                </tr>
+            `).join('');
+        };
+
+        window.renderAdminPibg = () => {
+             const tb = document.getElementById('adm-pibg-body');
+             if(!tb) return;
+             const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
+             const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => pibgItems.includes(k)));
+             tb.innerHTML = list.length ? list.map(o => `
+                <tr class="border-b hover:bg-yellow-50 text-sm">
+                    <td class="p-3 uppercase font-bold">${o.name}</td>
+                    <td class="p-3 uppercase text-xs">${o.parent}</td>
+                    <td class="p-3 text-center text-green-600 font-bold text-xs"><i class="fas fa-check"></i> YA</td>
+                    <td class="p-3 text-center font-mono text-xs">RM ${(o.paid||0).toFixed(2)}</td>
+                </tr>
+             `).join('') : '<tr><td colspan="4" class="p-6 text-center text-slate-400">Tiada rekod PIBG.</td></tr>';
+        };
+
+        window.renderAdminNametags = () => {
+             const tb = document.getElementById('adm-tag-body');
+             if(!tb) return;
+             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+             const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)));
+             tb.innerHTML = list.length ? list.map(o => `
+                <tr class="border-b hover:bg-purple-50 text-sm">
+                    <td class="p-3 uppercase font-medium">${o.name}</td>
+                    <td class="p-3 font-bold uppercase text-purple-700">${o.tagName||'-'}</td>
+                    <td class="p-3 text-center"><button onclick="window.updateTagStatus('${o.id}', ${o.tagStatus})" class="px-2 py-1 rounded text-[10px] font-bold text-white ${o.tagStatus?'bg-green-500':'bg-amber-500'}">${o.tagStatus?'SIAP':'PROSES'}</button></td>
+                </tr>
+             `).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
+        };
+
+        window.renderAdminLogs = () => {
+            const tb = document.getElementById('adm-log-body');
+            if(!tb) return;
+            const sorted = [...window.orders].sort((a,b)=> b.timestamp - a.timestamp);
+            tb.innerHTML = sorted.map(o => `<tr class="border-b text-xs"><td class="p-3 text-slate-400 font-mono">${new Date(o.timestamp).toLocaleString('ms-MY')}</td><td class="p-3 font-bold text-blue-600">ORDER</td><td class="p-3 uppercase">Tempahan oleh ${o.name} (RM ${o.total.toFixed(2)})</td></tr>`).join('');
+        };
+
+        // --- BULK & DELETE ACTIONS ---
+        window.toggleSelectAll = (source, selector) => document.querySelectorAll(selector).forEach(box => box.checked = source.checked);
+
+        window.deleteSelectedOrders = async () => {
+             const cbs = document.querySelectorAll('.order-checkbox:checked');
+             if(!cbs.length) return alert("Pilih tempahan dahulu.");
+             if(confirm(`Padam ${cbs.length} tempahan?`)) {
+                 const batch = writeBatch(db);
+                 cbs.forEach(cb => batch.delete(doc(db, 'book_orders', cb.dataset.id)));
+                 await batch.commit();
+                 document.getElementById('orderSelectAll').checked = false;
+             }
+        };
+
+        window.deleteSelectedItems = async () => {
+             const cbs = document.querySelectorAll('.inv-checkbox:checked');
+             if(!cbs.length) return alert("Pilih item dahulu.");
+             if(confirm(`Padam ${cbs.length} item?`)) {
+                 const batch = writeBatch(db);
+                 cbs.forEach(cb => batch.delete(doc(db, 'book_items', cb.dataset.id)));
+                 await batch.commit();
+                 document.getElementById('invSelectAll').checked = false;
+             }
+        };
+
+        window.deleteInventoryItem = (id) => {
+            if(confirm("Adakah anda pasti ingin memadam item ini dari inventori?\nTindakan ini tidak boleh dikembalikan.")) {
+                deleteDoc(doc(db, 'book_items', id)).catch(e => alert("Ralat: " + e.message));
+            }
+        };
+
+        // --- FIREBASE LISTENERS ---
+        const init = async () => {
+            try {
+                // Listen for Auth changes first
+                onAuthStateChanged(auth, (user) => {
+                    if (user && !user.isAnonymous) {
+                         // Named user (Admin)
+                         window.isAdminUser = true;
+                         if(!document.getElementById('adminLoginModal').classList.contains('hidden')) {
+                             window.closeAdminModal();
+                             window.switchView('admin');
+                         }
+                    } else {
+                         // Anonymous or Null
+                         window.isAdminUser = false;
+                    }
+                });
+
+                // Always allow anonymous login for public access (parents)
+                // If already logged in (as admin or anon), this is handled safely by Firebase SDK
+                await signInAnonymously(auth).catch(e => console.log("Silent login / Public access active."));
+                
+                // --- SNAPSHOTS ---
+                onSnapshot(query(itemsColl), (snap) => {
+                    const all = []; snap.forEach(d => all.push({ id: d.id, ...d.data() }));
+                    window.itemsA = all.filter(i => i.category === 'A').sort((a,b)=> (a.order||0)-(b.order||0));
+                    window.itemsB = all.filter(i => i.category === 'B').sort((a,b)=> (a.order||0)-(b.order||0));
+                    window.renderUserForm(); window.renderAdminInventory();
+                });
+                onSnapshot(query(ordersColl), (snap) => {
+                    window.orders = []; snap.forEach(d => window.orders.push({ id: d.id, ...d.data() }));
+                    if(!document.getElementById('admin-view').classList.contains('hidden')) {
+                         const currentTab = document.querySelector('.admin-nav-item.bg-slate-800')?.id.replace('nav-', '');
+                         if(currentTab) window.setAdminTab(currentTab);
+                    }
+                });
+            } catch(e) { console.error("Initialization Error", e); }
+        };
+        window.addEventListener('DOMContentLoaded', init);
+
+        // Modals & Helpers
+        window.openAdminModal = () => {
+            if(window.isAdminUser) window.switchView('admin');
+            else document.getElementById('adminLoginModal').classList.remove('hidden');
+        };
+        
+        window.closeAdminModal = () => document.getElementById('adminLoginModal').classList.add('hidden');
+        
+        // --- LOGIN FUNCTIONS (UPDATED) ---
+        window.loginWithEmail = async () => {
+            const email = document.getElementById('adminEmailInput').value.trim();
+            const pass = document.getElementById('adminPasswordInput').value;
+            
+            if(!email || !pass) {
+                alert("Sila masukkan email dan kata laluan.");
+                return;
+            }
+
+            try {
+                // Cuba log masuk
+                await signInWithEmailAndPassword(auth, email, pass);
+                // Jika berjaya, onAuthStateChanged akan menguruskan peralihan view
+            } catch(e) {
+                // PAPARKAN ERROR CODE UNTUK DEBUGGING
+                console.error("Login Error:", e);
+                let msg = "Log masuk gagal.";
+                if(e.code === 'auth/invalid-email') msg = "Format email tidak sah.";
+                else if(e.code === 'auth/user-not-found') msg = "Pengguna tidak dijumpai. Pastikan email betul.";
+                else if(e.code === 'auth/wrong-password') msg = "Kata laluan salah.";
+                else if(e.code === 'auth/too-many-requests') msg = "Terlalu banyak percubaan. Sila tunggu sebentar.";
+                
+                alert(`Ralat (${e.code}): ${msg}\n\nInfo Lanjut: ${e.message}`);
+            }
+        };
+        
+        window.loginWithGoogle = async () => {
+             try {
+                 await signInWithPopup(auth, googleProvider);
+             } catch(e) {
+                 alert(`Ralat Google Login (${e.code}): ${e.message}`);
+             }
+        };
+        
+        window.logoutAdmin = () => {
+            if(window.isAdminUser) {
+                signOut(auth).then(() => {
+                    window.isAdminUser = false;
+                    window.goHome();
+                });
+            } else {
+                window.goHome();
+            }
+        };
+
+        window.openAddItemModal = () => document.getElementById('addItemModal').classList.remove('hidden');
+        window.closeAddItemModal = () => document.getElementById('addItemModal').classList.add('hidden');
+        window.saveNewItem = async () => {
+             const name = document.getElementById('newItemName').value;
+             const price = parseFloat(document.getElementById('newItemPrice').value);
+             const category = document.getElementById('newItemCategory').value;
+             const isNametag = document.getElementById('newItemNametag').checked;
+             if(!name || isNaN(price)) return alert("Isi semua data.");
+             
+             // Guna itemsColl yang sudah ditetapkan ke root 'book_items'
+             await addDoc(itemsColl, { name, price, category, isNametag, order: Date.now() });
+             window.closeAddItemModal();
+             document.getElementById('newItemName').value = '';
+             document.getElementById('newItemPrice').value = '';
+        };
+
+        window.openPaymentModal = (id, cur, tot) => {
+            window.selectedOrderIdForPayment = id;
+            document.getElementById('paymentModalTotal').innerText = `RM ${tot.toFixed(2)}`;
+            document.getElementById('paymentInput').value = cur;
+            document.getElementById('paymentModal').classList.remove('hidden');
+        };
+        window.closePaymentModal = () => document.getElementById('paymentModal').classList.add('hidden');
+        window.savePayment = async () => {
+            const val = parseFloat(document.getElementById('paymentInput').value);
+            if(window.selectedOrderIdForPayment && !isNaN(val)) {
+                await updateDoc(doc(db, 'book_orders', window.selectedOrderIdForPayment), { paid: val });
+                window.closePaymentModal();
+            }
+        };
+        window.updateTagStatus = async (id, cur) => await updateDoc(doc(db, 'book_orders', id), { tagStatus: !cur });
+
+        // --- FUNGSI TOGGLE PASSWORD ---
+        window.togglePassword = () => {
+            const inp = document.getElementById('adminPasswordInput');
+            const icon = document.getElementById('passIcon');
+            if (inp.type === "password") {
+                inp.type = "text";
+                icon.classList.remove('fa-eye');
+                icon.classList.add('fa-eye-slash');
+            } else {
+                inp.type = "password";
+                icon.classList.remove('fa-eye-slash');
+                icon.classList.add('fa-eye');
+            }
+        };
+    </script>
+</head>
+<body class="bg-slate-50 flex flex-col min-h-screen text-slate-800">
+
+    <!-- NAVBAR (Public) -->
+    <nav id="mainNavbar" class="bg-white/90 backdrop-blur-md sticky top-0 z-40 px-6 py-4 shadow-sm border-b border-slate-100 transition-all no-print">
+        <div class="container mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-3 cursor-pointer" onclick="window.goHome()">
+                <div class="bg-brand-600 text-white p-2 rounded-lg shadow-lg shadow-brand-200"><i class="fas fa-book-open text-xl"></i></div>
+                <div><h1 class="text-lg font-black tracking-tight text-slate-800 leading-none">PRASEKOLAH LAVENDER</h1><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Sistem Pengurusan Yuran</p></div>
+            </div>
+            <button onclick="window.openAdminModal()" class="text-slate-400 hover:text-brand-600 font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition px-3 py-2 hover:bg-slate-50 rounded-lg"><i class="fas fa-lock"></i> Admin</button>
+        </div>
+    </nav>
+
+    <!-- LANDING VIEW -->
+    <div id="landing-view" class="flex-grow flex items-center justify-center p-6 animate-fadeUp">
+        <div class="w-full max-w-4xl grid md:grid-cols-2 gap-6">
+            <div onclick="window.startOrder()" class="bg-white p-8 rounded-3xl shadow-xl hover:shadow-2xl transition-all cursor-pointer border-2 border-transparent hover:border-brand-500 group relative overflow-hidden">
+                <div class="absolute top-0 right-0 bg-brand-50 w-32 h-32 rounded-bl-full -mr-8 -mt-8 opacity-50 group-hover:scale-110 transition-transform"></div>
+                <div class="w-16 h-16 bg-brand-100 text-brand-600 rounded-2xl flex items-center justify-center text-3xl mb-6 relative z-10 shadow-sm"><i class="fas fa-cart-plus"></i></div>
+                <h2 class="text-2xl font-bold text-slate-800 mb-2 relative z-10">Buat Tempahan Baru</h2>
+                <p class="text-slate-500 text-sm mb-8 relative z-10">Daftar item keperluan persekolahan dan jana invois.</p>
+                <span class="text-brand-600 font-bold text-sm flex items-center">MULA SEKARANG <i class="fas fa-arrow-right ml-2"></i></span>
+            </div>
+            <div onclick="window.startCheck()" class="bg-white p-8 rounded-3xl shadow-xl hover:shadow-2xl transition-all cursor-pointer border-2 border-transparent hover:border-blue-500 group relative overflow-hidden">
+                <div class="absolute top-0 right-0 bg-blue-50 w-32 h-32 rounded-bl-full -mr-8 -mt-8 opacity-50 group-hover:scale-110 transition-transform"></div>
+                <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center text-3xl mb-6 relative z-10 shadow-sm"><i class="fas fa-magnifying-glass-dollar"></i></div>
+                <h2 class="text-2xl font-bold text-slate-800 mb-2 relative z-10">Semakan Status</h2>
+                <p class="text-slate-500 text-sm mb-8 relative z-10">Semak status bayaran dan cetak semula resit.</p>
+                <span class="text-blue-600 font-bold text-sm flex items-center">SEMAK REKOD <i class="fas fa-arrow-right ml-2"></i></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- CHECK STATUS VIEW -->
+    <div id="check-view" class="hidden container mx-auto px-4 py-8 max-w-lg flex-grow">
+        <div class="bg-white p-8 rounded-2xl shadow-xl border border-slate-100">
+            <h2 class="text-xl font-bold text-slate-800 mb-6 text-center">Semakan Rekod</h2>
+            <div class="relative mb-6"><i class="fas fa-phone absolute left-4 top-3.5 text-slate-400"></i><input type="tel" id="checkPhone" class="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none font-bold text-slate-700" placeholder="Masukkan No. Telefon"></div>
+            <button onclick="window.doCheckStatus()" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-xl shadow-lg transition active:scale-95">SEMAK</button>
+        </div>
+        <div id="checkResults" class="mt-8"></div>
+        <div class="text-center mt-8"><button onclick="window.goHome()" class="text-slate-400 font-bold text-xs uppercase tracking-widest"><i class="fas fa-arrow-left mr-2"></i> Kembali</button></div>
+    </div>
+
+    <!-- USER ORDER FLOW -->
+    <main id="user-view" class="hidden flex-grow flex flex-col pb-28">
+        <div class="bg-white border-b border-slate-100 py-6 sticky top-0 z-30 shadow-sm no-print">
+            <div class="container mx-auto max-w-2xl px-6 relative">
+                <div class="absolute top-3 left-6 right-6 h-1 bg-slate-100 rounded-full -z-10"></div>
+                <div id="progress-bar-fill" class="absolute top-3 left-6 h-1 bg-brand-500 rounded-full -z-10 transition-all duration-500 ease-out" style="width: 0%"></div>
+                <div class="flex justify-between w-full">
+                    <div id="step-info" class="flex flex-col items-center cursor-pointer" onclick="window.safeNavigate('section-info')"><div class="step-circle w-7 h-7 rounded-full bg-brand-600 text-white border-4 border-white shadow-sm flex items-center justify-center font-bold text-[10px] transition-all">1</div><span class="step-label text-[10px] font-bold mt-2 text-brand-700 uppercase">Profil</span></div>
+                    <div id="step-a" class="flex flex-col items-center"><div class="step-circle w-7 h-7 rounded-full bg-white text-slate-300 border-4 border-white flex items-center justify-center font-bold text-[10px] transition-all border border-slate-200">2</div><span class="step-label text-[10px] font-bold mt-2 text-slate-400 uppercase">Wajib</span></div>
+                    <div id="step-b" class="flex flex-col items-center"><div class="step-circle w-7 h-7 rounded-full bg-white text-slate-300 border-4 border-white flex items-center justify-center font-bold text-[10px] transition-all border border-slate-200">3</div><span class="step-label text-[10px] font-bold mt-2 text-slate-400 uppercase">Pilihan</span></div>
+                    <div id="step-d" class="flex flex-col items-center"><div class="step-circle w-7 h-7 rounded-full bg-white text-slate-300 border-4 border-white flex items-center justify-center font-bold text-[10px] transition-all border border-slate-200">4</div><span class="step-label text-[10px] font-bold mt-2 text-slate-400 uppercase">Sah</span></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="container mx-auto px-4 py-8 max-w-2xl no-print">
+            <div id="section-info" class="bg-white p-8 rounded-2xl shadow-xl border border-slate-100 animate-fadeUp">
+                <h2 class="text-2xl font-bold text-slate-800 mb-6 text-center">Maklumat Murid</h2>
+                <div class="space-y-5">
+                    <div><label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 block">Nama Penuh Murid</label><input type="text" id="studentName" class="w-full pl-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none uppercase font-bold text-slate-700 text-sm" placeholder="CTH: AHMAD BIN ALI"></div>
+                    <div class="grid md:grid-cols-2 gap-5">
+                        <div><label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 block">Nama Penjaga</label><input type="text" id="parentName" class="w-full pl-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none uppercase font-medium text-slate-700 text-sm"></div>
+                        <div><label class="text-[11px] font-bold text-slate-500 uppercase tracking-wider mb-1.5 block">No. Telefon</label><input type="tel" id="parentPhone" class="w-full pl-4 py-3 bg-slate-50 border border-slate-200 rounded-xl outline-none font-medium text-slate-700 text-sm"></div>
+                    </div>
+                </div>
+                <button onclick="window.nextSection('section-a')" class="w-full mt-8 bg-brand-600 hover:bg-brand-700 text-white font-bold py-4 rounded-xl shadow-xl transition">TERUSKAN</button>
+                <button onclick="window.goHome()" class="w-full mt-4 text-slate-400 text-xs font-bold uppercase tracking-widest hover:text-slate-600">Batal</button>
+            </div>
+
+            <div id="section-a" class="hidden bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden animate-fadeUp">
+                <div class="bg-white p-6 border-b flex justify-between items-center sticky top-0 z-20"><h3 class="font-bold text-lg text-slate-800">Item Wajib (A)</h3><span class="text-[10px] bg-brand-50 text-brand-700 px-3 py-1 rounded-full font-bold border border-brand-100">WAJIB</span></div>
+                <div class="p-0 overflow-x-auto"><table class="w-full text-left"><tbody id="tbody-a" class="divide-y divide-slate-50"></tbody></table></div>
+                <div class="p-5 bg-slate-50 border-t flex justify-between items-center">
+                    <div class="text-right flex-grow mr-4"><span class="text-[10px] block text-slate-400 font-bold uppercase">Subjumlah</span><span class="text-xl font-black text-brand-700">RM <span id="totalA">0.00</span></span></div>
+                    <button onclick="window.safeNavigate('section-b')" class="bg-slate-900 text-white px-6 py-2.5 rounded-lg font-bold text-sm shadow-lg">Seterusnya</button>
+                </div>
+            </div>
+
+            <div id="section-b" class="hidden bg-white rounded-2xl shadow-xl border border-slate-100 overflow-hidden animate-fadeUp">
+                <div class="bg-white p-6 border-b sticky top-0 z-20"><h3 class="font-bold text-lg text-slate-800">Item Pilihan (B)</h3></div>
+                <div class="p-0 overflow-x-auto"><table class="w-full text-left"><tbody id="tbody-b" class="divide-y divide-slate-50"></tbody></table></div>
+                <div class="p-5 bg-slate-50 border-t flex justify-between items-center">
+                    <button onclick="window.safeNavigate('section-a')" class="text-slate-400 font-bold text-xs px-2">KEMBALI</button>
+                    <button onclick="window.safeNavigate('section-d')" class="bg-brand-600 text-white px-6 py-3 rounded-xl font-bold text-sm shadow-lg">SEMAK & SAHKAN</button>
+                </div>
+            </div>
+
+            <div id="section-d" class="hidden bg-white rounded-2xl shadow-2xl border border-slate-100 overflow-hidden animate-fadeUp relative">
+                <div class="p-8 pb-0 text-center">
+                    <p class="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-2">Anggaran Keseluruhan</p>
+                    <h2 class="text-5xl font-black text-slate-800" id="grandTotalDisplay">RM 0.00</h2>
+                </div>
+                <div class="p-8">
+                    <div class="bg-slate-50 rounded-xl border border-slate-100 overflow-hidden">
+                        <table class="w-full text-left">
+                            <thead class="bg-slate-100 text-[10px] uppercase text-slate-500 font-bold"><tr><th class="py-3 px-4">Butiran</th><th class="py-3 px-4 text-center w-16">Unit</th><th class="py-3 px-4 text-right w-24">Harga</th></tr></thead>
+                            <tbody id="summary-tbody" class="divide-y divide-slate-100 text-sm"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="p-6 bg-slate-50 border-t flex justify-between items-center gap-4">
+                    <button onclick="window.safeNavigate('section-b')" class="text-slate-400 font-bold text-xs order-2 md:order-1">UBAH PESANAN</button>
+                    <button onclick="window.submitOrder()" class="w-full md:w-auto order-1 md:order-2 bg-emerald-500 hover:bg-emerald-600 text-white px-8 py-3.5 rounded-xl font-bold shadow-xl flex items-center justify-center transition">
+                        <i class="fas fa-check-circle mr-2"></i> SAHKAN PESANAN
+                    </button>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ADMIN VIEW -->
+    <div id="admin-view" class="hidden fixed inset-0 bg-slate-50 z-50 flex h-screen overflow-hidden no-print">
+        <aside class="w-16 md:w-64 bg-slate-900 text-white flex flex-col shrink-0 shadow-2xl relative z-10 transition-all duration-300">
+            <!-- Header -->
+            <div class="h-16 flex items-center justify-center md:justify-start md:px-6 border-b border-slate-800 md:gap-3">
+                <div class="w-8 h-8 rounded bg-brand-500 flex items-center justify-center font-bold text-lg shrink-0 cursor-default">A</div>
+                <div class="hidden md:block">
+                    <h2 class="font-bold text-sm tracking-wide leading-tight">ADMIN</h2>
+                    <p class="text-[9px] text-slate-500 leading-tight">Prasekolah Lavender</p>
+                </div>
+            </div>
+
+            <!-- Nav -->
+            <nav class="flex-grow p-2 md:p-4 space-y-2 overflow-y-auto custom-scrollbar">
+                <!-- Dashboard -->
+                <button onclick="window.setAdminTab('dash')" id="nav-dash" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
+                    <i class="fas fa-chart-pie text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Dashboard</span>
+                </button>
+                
+                <!-- Tempahan -->
+                <button onclick="window.setAdminTab('orders')" id="nav-orders" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
+                    <i class="fas fa-file-invoice text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Tempahan</span>
+                </button>
+
+                <!-- Inventori -->
+                <button onclick="window.setAdminTab('inventory')" id="nav-inventory" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
+                    <i class="fas fa-boxes text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Inventori</span>
+                </button>
+
+                <!-- Divider / Label -->
+                <div class="hidden md:block pt-4 pb-1 pl-4 text-[10px] font-bold text-slate-600 uppercase tracking-widest">Laporan</div>
+                <div class="md:hidden border-t border-slate-800 my-2"></div>
+
+                <!-- PIBG -->
+                <button onclick="window.setAdminTab('pibg')" id="nav-pibg" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
+                    <i class="fas fa-hand-holding-heart text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Yuran PIBG</span>
+                </button>
+
+                <!-- Nametag -->
+                <button onclick="window.setAdminTab('nametag')" id="nav-nametag" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
+                    <i class="fas fa-id-badge text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Nametag</span>
+                </button>
+
+                <!-- Log -->
+                <button onclick="window.setAdminTab('log')" id="nav-log" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
+                    <i class="fas fa-history text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Log Aktiviti</span>
+                </button>
+            </nav>
+
+            <!-- Logout -->
+            <div class="p-2 md:p-4 border-t border-slate-800 bg-slate-900">
+                <button onclick="window.logoutAdmin()" class="w-full flex items-center justify-center border border-red-900/50 text-red-500 py-2.5 rounded-lg hover:bg-red-950 transition group" title="Keluar">
+                    <i class="fas fa-sign-out-alt text-lg md:mr-2"></i>
+                    <span class="hidden md:inline text-xs font-bold">KELUAR</span>
+                </button>
+            </div>
+        </aside>
+
+        <main class="flex-grow overflow-y-auto p-8 custom-scrollbar bg-slate-50/50 relative">
+            <div id="adm-dash" class="admin-tab animate-fadeUp">
+                <div class="flex justify-between items-end mb-8"><div><h2 class="text-3xl font-black text-slate-800 tracking-tight">Dashboard</h2><p class="text-slate-500 text-sm">Ringkasan prestasi.</p></div></div>
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100"><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Jumlah Kutipan</p><h3 class="text-2xl font-black text-emerald-600" id="d-revenue">RM 0.00</h3></div>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100"><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Bil. Murid</p><h3 class="text-2xl font-black text-slate-700" id="d-count">0</h3></div>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100"><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Tunggakan</p><h3 class="text-2xl font-black text-red-500" id="d-pending">RM 0.00</h3></div>
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100"><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Nametag</p><h3 class="text-2xl font-black text-brand-600" id="d-tags">0</h3></div>
+                </div>
+                <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-100 w-full md:w-1/2"><h4 class="font-bold text-slate-800 mb-6 flex items-center text-sm uppercase tracking-wide">Status Bayaran</h4><div class="h-64 relative"><canvas id="chartPayment"></canvas></div></div>
+            </div>
+            <div id="adm-orders" class="hidden admin-tab animate-fadeUp">
+                <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Senarai Tempahan</h2><button onclick="window.deleteSelectedOrders()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-lg">HAPUS DIPILIH</button></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase font-bold"><tr><th class="p-4 w-10 text-center"><input type="checkbox" id="orderSelectAll" onchange="window.toggleSelectAll(this, '.order-checkbox')" class="rounded"></th><th class="p-4">Maklumat</th><th class="p-4 text-center">Jumlah</th><th class="p-4 text-center">Dibayar</th><th class="p-4 text-center">Tindakan</th></tr></thead><tbody id="adm-orders-body" class="divide-y divide-slate-100"></tbody></table></div>
+            </div>
+            <div id="adm-inventory" class="hidden admin-tab animate-fadeUp">
+                <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Inventori</h2><div class="flex gap-2"><button onclick="window.deleteSelectedItems()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold">HAPUS</button><button onclick="window.openAddItemModal()" class="bg-brand-600 text-white px-4 py-2 rounded-lg font-bold text-xs">+ TAMBAH</button></div></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase font-bold"><tr><th class="p-4 w-10 text-center"><input type="checkbox" id="invSelectAll" onchange="window.toggleSelectAll(this, '.inv-checkbox')" class="rounded"></th><th class="p-4">Item</th><th class="p-4 text-center">Kategori</th><th class="p-4 text-center">Harga</th><th class="p-4 text-center">Aksi</th></tr></thead><tbody id="adm-inv-body" class="divide-y divide-slate-100"></tbody></table></div>
+            </div>
+            <div id="adm-pibg" class="hidden admin-tab animate-fadeUp">
+                <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Yuran PIBG</h2><div class="flex gap-2"><button onclick="window.exportPibgCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportPibgPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-yellow-100 text-yellow-900 border-b border-yellow-200 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Nama Penjaga</th><th class="p-4 text-center">Bayaran (RM)</th><th class="p-4 text-center">Status Bayaran</th></tr></thead><tbody id="adm-pibg-body" class="divide-y divide-slate-100"></tbody></table></div>
+            </div>
+            <div id="adm-nametag" class="hidden admin-tab animate-fadeUp">
+                <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Tempahan Nametag</h2><div class="flex gap-2"><button onclick="window.exportNametagCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Status</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
+            </div>
+            <div id="adm-log" class="hidden admin-tab animate-fadeUp"><h2 class="text-2xl font-bold text-slate-800 mb-6">Log Aktiviti</h2><div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 font-bold text-xs uppercase text-slate-500"><tr><th class="p-4 w-40">Masa</th><th class="p-4 w-32">Aksi</th><th class="p-4">Perincian</th></tr></thead><tbody id="adm-log-body" class="divide-y divide-slate-100"></tbody></table></div></div>
+        </main>
+    </div>
+
+    <!-- MODALS -->
+    <!-- Updated Admin Login Modal with Password Toggle -->
+    <div id="adminLoginModal" class="fixed inset-0 bg-slate-900/60 hidden z-[70] flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
+            <h3 class="text-xl font-bold text-slate-800 mb-4">Akses Pentadbir</h3>
+            <div class="space-y-4 mb-4">
+                <input type="email" id="adminEmailInput" class="w-full bg-slate-50 border border-slate-200 p-4 rounded-xl outline-none focus:border-brand-500 text-sm" placeholder="admin@sekolah.com">
+                
+                <!-- Password Field with Toggle -->
+                <div class="relative">
+                    <input type="password" id="adminPasswordInput" class="w-full bg-slate-50 border border-slate-200 p-4 rounded-xl outline-none focus:border-brand-500 text-center text-xl font-bold pr-12" placeholder="••••">
+                    <button onclick="window.togglePassword()" type="button" class="absolute right-4 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-brand-600 transition">
+                        <i class="fas fa-eye" id="passIcon"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="loginError" class="hidden text-red-500 text-xs font-bold mb-4">Log masuk gagal!</div>
+            <button onclick="window.loginWithEmail()" class="w-full bg-slate-900 text-white font-bold py-3 rounded-xl mb-2">MASUK</button>
+            <button onclick="window.loginWithGoogle()" class="w-full bg-white border border-slate-200 text-slate-600 font-bold py-3 rounded-xl mb-4 flex items-center justify-center hover:bg-slate-50"><i class="fab fa-google mr-2 text-red-500"></i> Google</button>
+            <button onclick="window.closeAdminModal()" class="text-slate-400 text-xs font-bold uppercase tracking-widest">Batal</button>
+        </div>
+    </div>
+    
+    <div id="addItemModal" class="fixed inset-0 bg-slate-900/60 hidden z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
+            <h3 class="text-lg font-bold text-slate-800 mb-4">Tambah Item</h3>
+            <div class="space-y-4 mb-6">
+                <input type="text" id="newItemName" class="w-full border p-3 rounded-lg outline-none uppercase font-bold text-sm" placeholder="NAMA ITEM">
+                <div class="grid grid-cols-2 gap-4">
+                    <input type="number" step="0.01" id="newItemPrice" class="w-full border p-3 rounded-lg outline-none text-sm" placeholder="HARGA RM">
+                    <select id="newItemCategory" class="w-full border p-3 rounded-lg outline-none text-sm"><option value="B">Pilihan (B)</option><option value="A">Wajib (A)</option></select>
+                </div>
+                <label class="flex items-center text-xs font-bold cursor-pointer"><input type="checkbox" id="newItemNametag" class="mr-2"> Perlu Nametag?</label>
+            </div>
+            <div class="flex gap-2"><button onclick="window.closeAddItemModal()" class="flex-1 border py-3 rounded-xl font-bold text-xs">BATAL</button><button id="btnSaveItem" onclick="window.saveNewItem()" class="flex-1 bg-brand-600 text-white py-3 rounded-xl font-bold text-xs">SIMPAN</button></div>
+        </div>
+    </div>
+    <div id="paymentModal" class="fixed inset-0 bg-slate-900/60 hidden z-[80] flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
+            <h3 class="text-lg font-bold text-slate-800 mb-2">Kemaskini Bayaran</h3>
+            <p class="text-slate-400 text-xs mb-6">Jumlah Perlu Dibayar: <span id="paymentModalTotal" class="font-bold text-slate-800"></span></p>
+            <div class="mb-6"><label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Jumlah Telah Dibayar (RM)</label><input type="number" step="0.01" id="paymentInput" class="w-full bg-slate-50 border-2 border-brand-100 p-4 rounded-xl outline-none focus:border-brand-500 text-center text-2xl font-bold text-brand-700"></div>
+            <div class="flex gap-3"><button onclick="window.closePaymentModal()" class="flex-1 py-3 rounded-xl font-bold text-xs border border-slate-200 hover:bg-slate-50">BATAL</button><button onclick="window.savePayment()" class="flex-1 bg-brand-600 hover:bg-brand-700 text-white py-3 rounded-xl font-bold text-xs shadow-lg">KEMASKINI</button></div>
+        </div>
+    </div>
+    <div id="receiptView" class="hidden fixed inset-0 bg-white z-[90] p-4 md:p-8 overflow-y-auto custom-scrollbar">
+        <div class="max-w-2xl mx-auto mb-6 no-print flex justify-between items-center bg-slate-900 text-white p-4 rounded-xl shadow-2xl">
+            <button onclick="window.closeReceipt()" class="text-slate-400 hover:text-white font-bold flex items-center text-sm px-2"><i class="fas fa-arrow-left mr-2"></i> TUTUP</button>
+            <button onclick="window.printReceipt()" class="bg-white text-slate-900 px-5 py-2 rounded-lg font-bold text-sm shadow hover:bg-slate-100 transition"><i class="fas fa-print mr-2"></i> CETAK / PDF</button>
+        </div>
+        <div class="max-w-2xl mx-auto border border-slate-200 shadow-xl p-8 md:p-12 bg-white relative print:shadow-none print:border-0" id="receiptContent">
+            <div class="text-center mb-10 border-b-2 border-slate-800 pb-6"><h2 class="text-3xl font-black tracking-tighter uppercase text-slate-900">SK Masjid Tanah</h2><p class="text-xs font-bold text-slate-500 uppercase tracking-[0.3em] mt-1">Prasekolah Lavender 2026</p></div>
+            <div class="flex justify-between items-end mb-8"><div><h3 class="text-4xl font-black text-brand-600 uppercase tracking-tighter" id="doc-title">INVOIS</h3><p class="text-xs text-slate-400 font-mono mt-1">ID: <span id="r-id" class="text-slate-800 font-bold"></span></p></div><div class="text-right"><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tarikh</p><p class="font-bold text-slate-800" id="r-date"></p></div></div>
+            <div class="bg-slate-50 p-6 rounded-lg mb-8 border border-slate-100 grid grid-cols-2 gap-6 uppercase"><div><p class="text-[10px] font-bold text-slate-400 mb-1">Nama Murid</p><p class="font-bold text-lg text-slate-800 leading-tight" id="r-name"></p></div><div><p class="text-[10px] font-bold text-slate-400 mb-1">Nama Penjaga</p><p class="font-medium text-slate-700" id="r-parent"></p></div></div>
+            <table class="w-full text-sm mb-10"><thead><tr class="border-b-2 border-slate-800 text-xs font-bold uppercase text-slate-600"><th class="py-3 text-left">Perincian</th><th class="py-3 text-center w-24">Harga</th><th class="py-3 text-center w-16">Unit</th><th class="py-3 text-right w-24">Jum</th></tr></thead><tbody id="r-body" class="divide-y divide-slate-100"></tbody></table>
+            <div class="flex justify-end"><div class="w-1/2"><div class="flex justify-between py-2 border-b border-slate-100"><span class="font-bold text-slate-500 text-xs uppercase">Jumlah Besar</span><span class="font-bold text-slate-800" id="r-total">RM 0.00</span></div><div class="flex justify-between py-2 border-b border-slate-100"><span class="font-bold text-slate-500 text-xs uppercase">Telah Dibayar</span><span class="font-bold text-emerald-600" id="r-paid">RM 0.00</span></div><div class="flex justify-between py-4"><span class="font-black text-slate-800 text-sm uppercase" id="r-balance-label">Baki</span><span class="font-black text-2xl text-red-600" id="r-balance">RM 0.00</span></div></div></div>
+        </div>
+    </div>
+    <div id="mobileActionBar" class="hidden md:hidden fixed bottom-0 left-0 w-full bg-white border-t p-4 z-40 flex justify-between items-center shadow-lg no-print">
+        <div class="flex flex-col"><span class="text-[10px] font-bold uppercase text-slate-400">Anggaran</span><div class="text-xl font-black text-brand-700" id="mobileGrandTotal">RM 0.00</div></div>
+        <button onclick="window.safeNavigate('section-d')" class="bg-brand-600 text-white px-6 py-2 rounded-lg font-bold text-xs shadow-lg">SEMAK</button>
+    </div>
+</body>
+</html>
