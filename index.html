@@ -372,7 +372,7 @@
                 }
             }
             
-            const orderData = { date: new Date().toLocaleDateString('ms-MY'), timestamp: Date.now(), name, parent, phone, total, paid: 0, items, tagName, tagStatus: false };
+            const orderData = { date: new Date().toLocaleDateString('ms-MY'), timestamp: Date.now(), name, parent, phone, total, paid: 0, items, tagName, tagStatus: false, paymentLogs: [] };
             try {
                 const ref = await addDoc(ordersColl, orderData);
                 window.currentReceipt = { id: ref.id, ...orderData };
@@ -455,6 +455,9 @@
             document.getElementById('r-paid').innerText = `RM ${(data.paid||0).toFixed(2)}`;
             document.getElementById('r-balance').innerText = `RM ${bal.toFixed(2)}`;
             document.getElementById('r-balance-label').innerText = bal > 0 ? "BAKI PERLU DIBAYAR" : "BAKI SIFAR";
+            
+            // Payment History in Receipt (Optional but good for transparency)
+            // Can be added here if needed, currently kept simple
         };
 
         window.closeReceipt = () => {
@@ -508,11 +511,13 @@
         };
         
         window.exportNametagCsv = () => {
-             const data = [["Nama Murid", "Tag Nama"]];
+             const data = [["Nama Murid", "Tag Nama", "Kuantiti"]];
              const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
              window.orders.forEach(o => {
                  if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
-                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`]);
+                     let qty = 0;
+                     Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
+                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, qty]);
                  }
              });
              window.generateCSV(data, "Senarai_Nametag.csv");
@@ -523,10 +528,16 @@
             const doc = new jsPDF();
             doc.text("Senarai Tempahan Nametag", 14, 20);
             const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
-            const body = window.orders
-                .filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)))
-                .map(o => [o.name, o.tagName || '-']);
-            doc.autoTable({ head: [['Nama Murid', 'Teks Tag Nama']], body: body, startY: 30 });
+            const body = [];
+            window.orders.forEach(o => {
+                 if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
+                     let qty = 0;
+                     Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
+                     body.push([o.name, o.tagName || '-', qty]);
+                 }
+            });
+
+            doc.autoTable({ head: [['Nama Murid', 'Teks Tag Nama', 'Kuantiti']], body: body, startY: 30 });
             doc.save("Senarai_Nametag.pdf");
         };
 
@@ -584,7 +595,7 @@
                     <td class="p-3"><div class="font-bold uppercase">${o.name}</div><div class="text-xs text-slate-500">${o.phone}</div></td>
                     <td class="p-3 text-center font-bold">RM ${o.total.toFixed(2)}</td>
                     <td class="p-3 text-center"><div class="text-xs font-bold ${o.paid>=o.total?'text-green-600':'text-red-600'}">${o.paid>=o.total?'LUNAS':'TUNGGAK'}</div><div class="text-xs text-slate-400">Dibayar: RM ${(o.paid||0).toFixed(2)}</div></td>
-                    <td class="p-3 text-center"><button onclick="window.openPaymentModal('${o.id}', ${o.paid||0}, ${o.total})" class="text-brand-600 hover:bg-brand-50 p-1 rounded"><i class="fas fa-edit"></i></button><button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1"><i class="fas fa-eye"></i></button></td>
+                    <td class="p-3 text-center"><button onclick="window.openPaymentModal('${o.id}')" class="text-brand-600 hover:bg-brand-50 p-1 rounded"><i class="fas fa-edit"></i></button><button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1"><i class="fas fa-eye"></i></button></td>
                 </tr>
             `).join('');
         };
@@ -628,14 +639,26 @@
         window.renderAdminNametags = () => {
              const tb = document.getElementById('adm-tag-body');
              if(!tb) return;
+             // Get IDs of all items considered as nametags
              const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
+             
+             // Filter orders that have at least one nametag item
              const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)));
-             tb.innerHTML = list.length ? list.map(o => `
+             
+             tb.innerHTML = list.length ? list.map(o => {
+                // Calculate total quantity of nametags for this order
+                let qty = 0;
+                Object.keys(o.items).forEach(k => {
+                    if(tagItems.includes(k)) qty += o.items[k];
+                });
+
+                return `
                 <tr class="border-b hover:bg-purple-50 text-sm">
                     <td class="p-3 uppercase font-medium">${o.name}</td>
                     <td class="p-3 font-bold uppercase text-purple-700">${o.tagName||'-'}</td>
+                    <td class="p-3 text-center font-bold">${qty}</td>
                 </tr>
-             `).join('') : '<tr><td colspan="2" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
+             `}).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
         };
 
         window.renderAdminLogs = () => {
@@ -835,20 +858,110 @@
              }
         };
 
-        window.openPaymentModal = (id, cur, tot) => {
+        // --- UPDATED PAYMENT MODAL LOGIC (HISTORY & ADD NEW) ---
+        window.openPaymentModal = (id) => {
             window.selectedOrderIdForPayment = id;
-            document.getElementById('paymentModalTotal').innerText = `RM ${tot.toFixed(2)}`;
-            document.getElementById('paymentInput').value = cur;
+            const order = window.orders.find(o => o.id === id);
+            if (!order) return;
+
+            // Render History List
+            const listEl = document.getElementById('paymentHistoryList');
+            listEl.innerHTML = '';
+            
+            let logs = order.paymentLogs || [];
+            // Fallback: If no logs exist but there is a paid amount > 0, treat it as a legacy payment record
+            if (logs.length === 0 && (order.paid || 0) > 0) {
+                logs = [{ date: "Rekod Lama", amount: order.paid }];
+            }
+
+            if (logs.length > 0) {
+                logs.forEach((log, idx) => {
+                    // Handle date formatting if it's a timestamp or string
+                    let dateStr = log.date; 
+                    if(typeof log.date === 'number') {
+                        dateStr = new Date(log.date).toLocaleDateString('ms-MY') + ' ' + new Date(log.date).toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'});
+                    }
+
+                    listEl.innerHTML += `
+                        <div class="flex justify-between items-center text-xs border-b border-slate-100 py-2">
+                            <span class="text-slate-500 font-mono">${idx + 1}. ${dateStr}</span>
+                            <span class="font-bold text-slate-700">RM ${parseFloat(log.amount).toFixed(2)}</span>
+                        </div>
+                    `;
+                });
+            } else {
+                listEl.innerHTML = '<p class="text-center text-slate-400 text-xs py-4 italic bg-slate-50 rounded-lg">Tiada rekod bayaran terdahulu.</p>';
+            }
+
+            // Calculate totals
+            const total = order.total || 0;
+            const paid = order.paid || 0;
+            const balance = total - paid;
+
+            // Update UI Displays
+            document.getElementById('paymentModalTotal').innerText = `RM ${total.toFixed(2)}`;
+            document.getElementById('paymentModalPaid').innerText = `RM ${paid.toFixed(2)}`;
+            document.getElementById('paymentModalBalance').innerText = `RM ${balance.toFixed(2)}`;
+            
+            // Set balance text color
+            const balEl = document.getElementById('paymentModalBalance');
+            if(balance > 0) balEl.className = "font-black text-red-500 text-lg";
+            else balEl.className = "font-black text-green-500 text-lg";
+
+            document.getElementById('paymentInput').value = ''; // Reset input for new entry
             document.getElementById('paymentModal').classList.remove('hidden');
         };
+
         window.closePaymentModal = () => document.getElementById('paymentModal').classList.add('hidden');
+        
         window.savePayment = async () => {
             const val = parseFloat(document.getElementById('paymentInput').value);
-            if(window.selectedOrderIdForPayment && !isNaN(val)) {
-                await updateDoc(doc(db, 'book_orders', window.selectedOrderIdForPayment), { paid: val });
-                window.closePaymentModal();
+            const orderId = window.selectedOrderIdForPayment;
+            const order = window.orders.find(o => o.id === orderId);
+
+            if (orderId && !isNaN(val) && val > 0) {
+                // Construct new log entry
+                const newLog = {
+                    date: new Date().toLocaleDateString('ms-MY') + ' ' + new Date().toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'}),
+                    timestamp: Date.now(),
+                    amount: val
+                };
+
+                const currentPaid = order.paid || 0;
+                const newTotalPaid = currentPaid + val;
+                
+                // Handle existing logs array
+                let currentLogs = order.paymentLogs || [];
+                
+                // If this is the first time we are adding logs to an old record that had payments but no logs
+                if (currentLogs.length === 0 && currentPaid > 0) {
+                    currentLogs.push({ date: "Rekod Lama", timestamp: Date.now(), amount: currentPaid });
+                }
+
+                const updatedLogs = [...currentLogs, newLog];
+
+                const btn = document.querySelector('#paymentModal button.bg-brand-600');
+                const oldText = btn.innerText;
+                btn.innerText = "...";
+                btn.disabled = true;
+
+                try {
+                    await updateDoc(doc(db, 'book_orders', orderId), { 
+                        paid: newTotalPaid,
+                        paymentLogs: updatedLogs
+                    });
+                    window.closePaymentModal();
+                } catch(e) {
+                    alert("Ralat: " + e.message);
+                } finally {
+                    btn.innerText = oldText;
+                    btn.disabled = false;
+                }
+            } else {
+                alert("Sila masukkan jumlah bayaran yang sah (Lebih dari 0).");
             }
         };
+
         window.updateTagStatus = async (id, cur) => await updateDoc(doc(db, 'book_orders', id), { tagStatus: !cur });
 
         // --- FUNGSI TOGGLE PASSWORD ---
@@ -1071,7 +1184,7 @@
             
             <div id="adm-nametag" class="hidden admin-tab animate-fadeUp">
                 <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Tempahan Nametag</h2><div class="flex gap-2"><button onclick="window.exportNametagCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Kuantiti</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
             <div id="adm-log" class="hidden admin-tab animate-fadeUp"><h2 class="text-2xl font-bold text-slate-800 mb-6">Log Aktiviti</h2><div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 font-bold text-xs uppercase text-slate-500"><tr><th class="p-4 w-40">Masa</th><th class="p-4 w-32">Aksi</th><th class="p-4">Perincian</th></tr></thead><tbody id="adm-log-body" class="divide-y divide-slate-100"></tbody></table></div></div>
         </main>
@@ -1109,19 +1222,48 @@
                     <input type="number" step="0.01" id="newItemPrice" class="w-full border p-3 rounded-lg outline-none text-sm" placeholder="HARGA RM">
                     <select id="newItemCategory" class="w-full border p-3 rounded-lg outline-none text-sm"><option value="B">Pilihan (B)</option><option value="A">Wajib (A)</option></select>
                 </div>
-                <!-- Checkbox "Perlu Nametag" removed as requested -->
             </div>
             <div class="flex gap-2"><button onclick="window.closeAddItemModal()" class="flex-1 border py-3 rounded-xl font-bold text-xs">BATAL</button><button id="btnSaveItem" onclick="window.saveNewItem()" class="flex-1 bg-brand-600 text-white py-3 rounded-xl font-bold text-xs">SIMPAN</button></div>
         </div>
     </div>
+
+    <!-- UPDATED PAYMENT MODAL FOR HISTORY -->
     <div id="paymentModal" class="fixed inset-0 bg-slate-900/60 hidden z-[80] flex items-center justify-center p-4 backdrop-blur-sm">
-        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
-            <h3 class="text-lg font-bold text-slate-800 mb-2">Kemaskini Bayaran</h3>
-            <p class="text-slate-400 text-xs mb-6">Jumlah Perlu Dibayar: <span id="paymentModalTotal" class="font-bold text-slate-800"></span></p>
-            <div class="mb-6"><label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Jumlah Telah Dibayar (RM)</label><input type="number" step="0.01" id="paymentInput" class="w-full bg-slate-50 border-2 border-brand-100 p-4 rounded-xl outline-none focus:border-brand-500 text-center text-2xl font-bold text-brand-700"></div>
-            <div class="flex gap-3"><button onclick="window.closePaymentModal()" class="flex-1 py-3 rounded-xl font-bold text-xs border border-slate-200 hover:bg-slate-50">BATAL</button><button onclick="window.savePayment()" class="flex-1 bg-brand-600 hover:bg-brand-700 text-white py-3 rounded-xl font-bold text-xs shadow-lg">KEMASKINI</button></div>
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
+            <h3 class="text-xl font-bold text-slate-800 mb-2 border-b pb-2">Rekod Bayaran</h3>
+            
+            <!-- History List -->
+            <div id="paymentHistoryList" class="mb-4 max-h-40 overflow-y-auto custom-scrollbar border-b border-slate-100 pb-2">
+                <!-- Log items injected here -->
+            </div>
+
+            <div class="bg-slate-50 rounded-xl p-4 mb-4 grid grid-cols-3 gap-2 text-center">
+                <div>
+                    <p class="text-[9px] font-bold text-slate-400 uppercase">Jumlah</p>
+                    <p class="font-bold text-slate-700" id="paymentModalTotal">RM 0.00</p>
+                </div>
+                <div>
+                    <p class="text-[9px] font-bold text-slate-400 uppercase">Dibayar</p>
+                    <p class="font-bold text-emerald-600" id="paymentModalPaid">RM 0.00</p>
+                </div>
+                <div>
+                    <p class="text-[9px] font-bold text-slate-400 uppercase">Baki</p>
+                    <p class="font-black text-red-500 text-lg" id="paymentModalBalance">RM 0.00</p>
+                </div>
+            </div>
+
+            <div class="mb-6">
+                <label class="text-[10px] font-bold text-brand-500 uppercase tracking-widest block mb-2">Tambah Bayaran Terkini (RM)</label>
+                <input type="number" step="0.01" id="paymentInput" placeholder="0.00" class="w-full bg-slate-50 border-2 border-brand-100 p-3 rounded-xl outline-none focus:border-brand-500 text-center text-xl font-bold text-brand-700">
+            </div>
+            
+            <div class="flex gap-3">
+                <button onclick="window.closePaymentModal()" class="flex-1 py-3 rounded-xl font-bold text-xs border border-slate-200 hover:bg-slate-50">TUTUP</button>
+                <button onclick="window.savePayment()" class="flex-1 bg-brand-600 hover:bg-brand-700 text-white py-3 rounded-xl font-bold text-xs shadow-lg">TAMBAH BAYARAN</button>
+            </div>
         </div>
     </div>
+
     <div id="receiptView" class="hidden fixed inset-0 bg-white z-[90] p-4 md:p-8 overflow-y-auto custom-scrollbar">
         <div class="max-w-2xl mx-auto mb-6 no-print flex justify-between items-center bg-slate-900 text-white p-4 rounded-xl shadow-2xl">
             <button onclick="window.closeReceipt()" class="text-slate-400 hover:text-white font-bold flex items-center text-sm px-2"><i class="fas fa-arrow-left mr-2"></i> TUTUP</button>
