@@ -31,42 +31,12 @@
     <!-- CSS Khas untuk Cetakan -->
     <style>
         @media print {
-            .no-print, .no-print * {
-                display: none !important;
-            }
-            body {
-                background-color: white;
-                -webkit-print-color-adjust: exact;
-            }
-            #receiptView {
-                position: absolute;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                margin: 0;
-                padding: 0;
-                background-color: white;
-                z-index: 9999;
-            }
-            #receiptContent {
-                box-shadow: none !important;
-                border: none !important;
-                margin: 0 !important;
-                padding: 0 !important;
-                width: 100% !important;
-            }
+            .no-print, .no-print * { display: none !important; }
+            body { background-color: white; -webkit-print-color-adjust: exact; }
+            #receiptView { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; padding: 0; background-color: white; z-index: 9999; }
+            #receiptContent { box-shadow: none !important; border: none !important; margin: 0 !important; padding: 0 !important; width: 100% !important; }
         }
-        /* Loading Spinner */
-        .loader {
-            border: 2px solid #f3f3f3;
-            border-top: 2px solid #6d28d9;
-            border-radius: 50%;
-            width: 16px;
-            height: 16px;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-        }
+        .loader { border: 2px solid #f3f3f3; border-top: 2px solid #6d28d9; border-radius: 50%; width: 16px; height: 16px; animation: spin 1s linear infinite; display: inline-block; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 
@@ -74,7 +44,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, deleteDoc, onSnapshot, query, doc, updateDoc, where, getDocs, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, deleteDoc, onSnapshot, query, doc, updateDoc, where, getDocs, writeBatch, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- KONFIGURASI FIREBASE ---
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
@@ -92,11 +62,12 @@
         const db = getFirestore(app);
         const googleProvider = new GoogleAuthProvider();
 
-        // --- PENGGUNAAN ROOT PATHS ---
+        // --- MENGGUNAKAN ROOT COLLECTIONS (KEMBALI KE ASAL) ---
         const itemsColl = collection(db, 'book_items');
         const ordersColl = collection(db, 'book_orders');
-        
-        console.log("Sistem beroperasi menggunakan ROOT collections: 'book_items' & 'book_orders'");
+        const configDocRef = doc(db, 'book_config', 'general');
+
+        console.log("Sistem beroperasi. Telegram Module Active (Root Paths).");
 
         // Global State
         window.itemsA = [];
@@ -107,14 +78,14 @@
         window.chartP = null;
         window.selectedOrderIdForPayment = null;
         window.isAdminUser = false;
+        window.appConfig = { telegramBotToken: '', telegramChatId: '' }; // Local Config State
 
-        // --- HELPER UNTUK KIRA KOS ITEM TERTENTU DALAM ORDER ---
+        // --- HELPER UNTUK KIRA KOS ---
         window.calculateSpecificItemCost = (order, keywordStr, excludeStr = null) => {
             let total = 0;
             const keywords = keywordStr.split(',');
             const excludes = excludeStr ? excludeStr.split(',') : [];
             const allItems = [...window.itemsA, ...window.itemsB];
-
             if(order.items) {
                 Object.entries(order.items).forEach(([itemId, qty]) => {
                     const item = allItems.find(i => i.id === itemId);
@@ -122,20 +93,59 @@
                         const name = item.name.toUpperCase();
                         const matchesKeyword = keywords.some(k => name.includes(k.trim().toUpperCase()));
                         const matchesExclude = excludes.length > 0 && excludes.some(e => name.includes(e.trim().toUpperCase()));
-                        
-                        if(matchesKeyword && !matchesExclude) {
-                            total += (item.price * qty);
-                        }
+                        if(matchesKeyword && !matchesExclude) total += (item.price * qty);
                     }
                 });
             }
             return total;
         };
 
-        // --- HELPER: CHECK IF ITEM IS NAMETAG ---
         window.isNametagItem = (name) => {
             const n = name.toUpperCase();
             return n.includes('NAMETAG') || n.includes('TAG NAMA');
+        };
+
+        // --- TELEGRAM NOTIFICATION FUNCTION ---
+        window.sendTelegramNotification = async (orderData) => {
+            try {
+                // Fetch latest config to ensure we have the token
+                const snap = await getDoc(configDocRef);
+                let token = '';
+                let chatId = '';
+
+                if (snap.exists()) {
+                    const data = snap.data();
+                    token = data.telegramBotToken;
+                    chatId = data.telegramChatId;
+                }
+
+                if (token && chatId) {
+                    const msg = `<b>TEMPAHAN BARU 📝</b>\n\n` +
+                                `<b>Nama Murid:</b> ${orderData.name}\n` +
+                                `<b>Ibu Bapa:</b> ${orderData.parent}\n` +
+                                `<b>No. Tel:</b> ${orderData.phone}\n` +
+                                `<b>Jumlah:</b> RM ${orderData.total.toFixed(2)}\n` +
+                                `<b>ID Tempahan:</b> <code>${orderData.id ? orderData.id.substring(0,8).toUpperCase() : '-'}</code>\n\n` +
+                                `<i>Sila semak sistem admin untuk tindakan lanjut.</i>`;
+                    
+                    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+                    await fetch(url, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            chat_id: chatId,
+                            text: msg,
+                            parse_mode: 'HTML'
+                        })
+                    });
+                    console.log("Telegram notification sent.");
+                } else {
+                    console.log("Telegram config missing. Skipping notification.");
+                }
+            } catch (e) {
+                console.error("Telegram API Error:", e);
+                // Fail silently so user experience isn't affected
+            }
         };
 
         // --- NAVIGATION ---
@@ -168,7 +178,6 @@
             window.scrollTo({top: 0, behavior: 'smooth'});
             if(id === 'section-d') window.renderSummary();
             
-            // Update Stepper
             const steps = ['info', 'a', 'b', 'd'];
             const activeIdx = {'section-info':0, 'section-a':1, 'section-b':2, 'section-d':3}[id];
             const pb = document.getElementById('progress-bar-fill');
@@ -204,12 +213,10 @@
             if (!totalAEl) return;
             let total = parseFloat(totalAEl.innerText) || 0;
             window.cartState = {};
-            
             document.querySelectorAll('.qty-input').forEach(inp => {
                 const qty = parseInt(inp.value) || 0;
                 const price = parseFloat(inp.dataset.price);
                 const id = inp.dataset.id;
-                
                 if (qty > 0) {
                     window.cartState[id] = qty;
                     total += (qty * price);
@@ -217,17 +224,14 @@
                 } else {
                     document.getElementById(`tagInput-${id}`)?.classList.add('hidden');
                 }
-                
                 const subEl = document.getElementById(`sub-${id}`);
                 if(subEl) subEl.innerText = (qty * price).toFixed(2);
             });
-            
             const totalStr = `RM ${total.toFixed(2)}`;
             if(document.getElementById('grandTotalDisplay')) document.getElementById('grandTotalDisplay').innerText = totalStr;
             if(document.getElementById('mobileGrandTotal')) document.getElementById('mobileGrandTotal').innerText = totalStr;
         };
 
-        // Helper to count characters
         window.updateCharCount = (input) => {
             const max = 12;
             const current = input.value.length;
@@ -245,7 +249,6 @@
             const tB = document.getElementById('tbody-b');
             const totalAEl = document.getElementById('totalA');
             
-            // Kategori A
             if(window.itemsA.length) {
                 tA.innerHTML = window.itemsA.map((i, idx) => `
                     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
@@ -257,7 +260,6 @@
                 if(totalAEl) totalAEl.innerText = window.itemsA.reduce((a,b)=>a+b.price,0).toFixed(2);
             } else tA.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item wajib.</td></tr>';
             
-            // Kategori B
             if(window.itemsB.length) {
                 tB.innerHTML = window.itemsB.map(i => {
                     const isTag = window.isNametagItem(i.name);
@@ -317,32 +319,23 @@
         };
 
         window.submitOrder = async () => {
-            // Butang loading state
             const btn = document.querySelector('button[onclick="window.submitOrder()"]');
             const originalText = btn.innerHTML;
             btn.innerHTML = '<span class="loader mr-2"></span> PROSES...';
             btn.disabled = true;
 
             if (!auth.currentUser) {
-                try {
-                    await signInAnonymously(auth);
-                } catch (authError) {
-                    btn.innerHTML = originalText;
-                    btn.disabled = false;
-                    alert("Ralat Sistem: Tidak dapat log masuk (Anonymous Auth). " + authError.message);
-                    return;
-                }
+                try { await signInAnonymously(auth); } 
+                catch (authError) { btn.innerHTML = originalText; btn.disabled = false; alert("Ralat Sistem: " + authError.message); return; }
             }
 
             const name = document.getElementById('studentName').value.toUpperCase();
             const parent = document.getElementById('parentName').value.toUpperCase();
             const phone = document.getElementById('parentPhone').value;
             const total = parseFloat(document.getElementById('grandTotalDisplay').innerText.replace('RM ', ''));
+            
             if(!name || !parent || !phone) { 
-                btn.innerHTML = originalText;
-                btn.disabled = false;
-                alert("Sila isi semua maklumat."); 
-                return; 
+                btn.innerHTML = originalText; btn.disabled = false; alert("Sila isi semua maklumat."); return; 
             }
 
             let items = {};
@@ -350,36 +343,33 @@
 
             const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name));
             let tagName = "";
-            let hasTag = false;
 
             for(let t of tagItems) {
                 if(items[t.id]) {
-                    hasTag = true;
                     tagName = document.getElementById(`tagNameInput-${t.id}`).value.toUpperCase().trim();
-                    if(!tagName) { 
-                        btn.innerHTML = originalText;
-                        btn.disabled = false;
-                        alert("Sila isi NAMA PADA TAG untuk item " + t.name); 
-                        return; 
-                    }
-                    if(tagName.length > 12) { 
-                        btn.innerHTML = originalText;
-                        btn.disabled = false;
-                        alert("Nama pada tag tidak boleh melebihi 12 huruf."); 
-                        return; 
-                    }
+                    if(!tagName) { btn.innerHTML = originalText; btn.disabled = false; alert("Sila isi NAMA PADA TAG untuk " + t.name); return; }
+                    if(tagName.length > 12) { btn.innerHTML = originalText; btn.disabled = false; alert("Nama tag max 12 huruf."); return; }
                     break; 
                 }
             }
             
-            const orderData = { date: new Date().toLocaleDateString('ms-MY'), timestamp: Date.now(), name, parent, phone, total, paid: 0, items, tagName, tagStatus: false, paymentLogs: [] };
+            const orderData = { 
+                date: new Date().toLocaleDateString('ms-MY'), 
+                timestamp: Date.now(), 
+                name, parent, phone, total, 
+                paid: 0, items, tagName, tagStatus: false, paymentLogs: [] 
+            };
+
             try {
                 const ref = await addDoc(ordersColl, orderData);
+                // Trigger Telegram
+                await window.sendTelegramNotification({ id: ref.id, ...orderData });
+                
                 window.currentReceipt = { id: ref.id, ...orderData };
                 window.renderReceiptView(window.currentReceipt);
             } catch(e) { 
                 console.error(e);
-                alert("Gagal menghantar tempahan! Sila pastikan talian internet stabil.\n\nKod Ralat: " + e.message); 
+                alert("Gagal menghantar tempahan! Sila semak internet."); 
             } finally {
                 btn.innerHTML = originalText;
                 btn.disabled = false;
@@ -403,14 +393,12 @@
                     const d = doc.data();
                     const baki = d.total - (d.paid || 0);
                     const statusClass = baki <= 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-                    const statusText = baki <= 0 ? 'SELESAI' : 'TERTUNGGAK';
                     const dataStr = JSON.stringify({id: doc.id, ...d}).replace(/"/g, '&quot;');
-                    
                     html += `
                     <div class="bg-white p-4 rounded-xl border shadow-sm">
                         <div class="flex justify-between mb-2">
                             <h4 class="font-bold text-slate-800 uppercase">${d.name}</h4>
-                            <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${statusText}</span>
+                            <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${baki <= 0 ? 'SELESAI' : 'TERTUNGGAK'}</span>
                         </div>
                         <p class="text-xs text-slate-500 mb-3">Jumlah: RM ${d.total.toFixed(2)} | Dibayar: RM ${(d.paid||0).toFixed(2)}</p>
                         <button onclick='window.viewReceiptDirect(${dataStr})' class="w-full bg-brand-600 text-white text-xs font-bold py-2 rounded-lg">LIHAT INVOIS</button>
@@ -420,7 +408,6 @@
             } catch(e) { resDiv.innerHTML = 'Ralat sistem.'; console.error(e); }
         };
 
-        // --- RECEIPT VIEW ---
         window.viewReceiptDirect = (data) => window.renderReceiptView(data);
         window.viewReceiptFromAdmin = (id) => { const o = window.orders.find(x => x.id === id); if(o) window.renderReceiptView(o); };
         
@@ -438,7 +425,6 @@
             
             const tb = document.getElementById('r-body');
             tb.innerHTML = '';
-            
             window.itemsA.forEach(i => { tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${i.name}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">1</td><td class="border-b py-2 text-right">${i.price.toFixed(2)}</td></tr>`; });
             if(data.items) {
                 Object.entries(data.items).forEach(([id, qty]) => {
@@ -450,96 +436,20 @@
                     }
                 });
             }
-            
             document.getElementById('r-total').innerText = `RM ${data.total.toFixed(2)}`;
             document.getElementById('r-paid').innerText = `RM ${(data.paid||0).toFixed(2)}`;
             document.getElementById('r-balance').innerText = `RM ${bal.toFixed(2)}`;
             document.getElementById('r-balance-label').innerText = bal > 0 ? "BAKI PERLU DIBAYAR" : "BAKI SIFAR";
-            
-            // Payment History in Receipt (Optional but good for transparency)
-            // Can be added here if needed, currently kept simple
         };
 
         window.closeReceipt = () => {
             document.getElementById('receiptView').classList.add('hidden');
-            if(window.isAdminUser) {
-                document.getElementById('admin-view').classList.remove('hidden');
-            } else if(document.getElementById('checkResults').innerHTML !== '') {
-                document.getElementById('check-view').classList.remove('hidden');
-                document.getElementById('mainNavbar').classList.remove('hidden');
-            } else {
-                window.goHome();
-            }
+            if(window.isAdminUser) document.getElementById('admin-view').classList.remove('hidden');
+            else if(document.getElementById('checkResults').innerHTML !== '') { document.getElementById('check-view').classList.remove('hidden'); document.getElementById('mainNavbar').classList.remove('hidden'); }
+            else window.goHome();
         };
 
         window.printReceipt = () => window.print();
-
-        // --- EXPORT FUNCTIONS ---
-        window.generateCSV = (data, filename) => {
-            const csvContent = "data:text/csv;charset=utf-8," + data.map(e => e.join(",")).join("\n");
-            const link = document.createElement("a");
-            link.setAttribute("href", encodeURI(csvContent));
-            link.setAttribute("download", filename);
-            document.body.appendChild(link); link.click(); document.body.removeChild(link);
-        };
-
-        window.exportPibgCsv = () => {
-            const data = [["Nama Murid", "Nama Penjaga", "Yuran PIBG (RM)", "Status"]];
-            window.orders.forEach(o => {
-                const pibgCost = window.calculateSpecificItemCost(o, 'PIBG');
-                if(pibgCost > 0) {
-                     data.push([`"${o.name}"`, `"${o.parent}"`, pibgCost.toFixed(2), (o.paid>=o.total ? "SELESAI" : "BELUM")]);
-                }
-            });
-            window.generateCSV(data, "Laporan_PIBG.csv");
-        };
-
-        window.exportPibgPdf = () => {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
-            doc.text("Laporan Yuran PIBG 2026", 14, 20);
-            
-            const body = [];
-            window.orders.forEach(o => {
-                const pibgCost = window.calculateSpecificItemCost(o, 'PIBG');
-                if(pibgCost > 0) {
-                    body.push([o.name, o.parent, `RM ${pibgCost.toFixed(2)}`, (o.paid >= o.total ? "SELESAI" : "BELUM")]);
-                }
-            });
-            doc.autoTable({ head: [['Nama Murid', 'Penjaga', 'Yuran PIBG', 'Status']], body: body, startY: 30 });
-            doc.save("Laporan_PIBG.pdf");
-        };
-        
-        window.exportNametagCsv = () => {
-             const data = [["Nama Murid", "Tag Nama", "Kuantiti"]];
-             const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
-             window.orders.forEach(o => {
-                 if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
-                     let qty = 0;
-                     Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
-                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, qty]);
-                 }
-             });
-             window.generateCSV(data, "Senarai_Nametag.csv");
-        };
-
-        window.exportNametagPdf = () => {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
-            doc.text("Senarai Tempahan Nametag", 14, 20);
-            const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
-            const body = [];
-            window.orders.forEach(o => {
-                 if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
-                     let qty = 0;
-                     Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
-                     body.push([o.name, o.tagName || '-', qty]);
-                 }
-            });
-
-            doc.autoTable({ head: [['Nama Murid', 'Teks Tag Nama', 'Kuantiti']], body: body, startY: 30 });
-            doc.save("Senarai_Nametag.pdf");
-        };
 
         // --- ADMIN CORE ---
         window.switchView = (view) => {
@@ -564,6 +474,7 @@
             if(tab === 'pibg') window.renderAdminPibg();
             if(tab === 'nametag') window.renderAdminNametags();
             if(tab === 'log') window.renderAdminLogs();
+            if(tab === 'settings') window.renderAdminSettings();
         };
 
         window.renderAdminDashboard = () => {
@@ -572,7 +483,6 @@
              document.getElementById('d-revenue').innerText = `RM ${rev.toFixed(2)}`;
              document.getElementById('d-count').innerText = window.orders.length;
              document.getElementById('d-pending').innerText = `RM ${pend.toFixed(2)}`;
-             
              const ctx = document.getElementById('chartPayment');
              if(ctx) {
                  if(window.chartP) window.chartP.destroy();
@@ -594,7 +504,7 @@
                     <td class="p-3"><input type="checkbox" class="order-checkbox rounded border-slate-300" data-id="${o.id}"></td>
                     <td class="p-3"><div class="font-bold uppercase">${o.name}</div><div class="text-xs text-slate-500">${o.phone}</div></td>
                     <td class="p-3 text-center font-bold">RM ${o.total.toFixed(2)}</td>
-                    <td class="p-3 text-center"><div class="text-xs font-bold ${o.paid>=o.total?'text-green-600':'text-red-600'}">${o.paid>=o.total?'LUNAS':'TUNGGAK'}</div><div class="text-xs text-slate-400">Dibayar: RM ${(o.paid||0).toFixed(2)}</div></td>
+                    <td class="p-3 text-center"><div class="text-xs font-bold ${o.paid>=o.total?'text-green-600':'text-red-600'}">${o.paid>=o.total?'LUNAS':'TUNGGAK'}</div><div class="text-xs text-slate-400">Bayar: RM ${(o.paid||0).toFixed(2)}</div></td>
                     <td class="p-3 text-center"><button onclick="window.openPaymentModal('${o.id}')" class="text-brand-600 hover:bg-brand-50 p-1 rounded"><i class="fas fa-edit"></i></button><button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1"><i class="fas fa-eye"></i></button></td>
                 </tr>
             `).join('');
@@ -618,10 +528,7 @@
         window.renderAdminPibg = () => {
              const tb = document.getElementById('adm-pibg-body');
              if(!tb) return;
-             
-             // Get orders containing PIBG
              const list = window.orders.filter(o => window.calculateSpecificItemCost(o, 'PIBG') > 0);
-
              tb.innerHTML = list.length ? list.map(o => {
                 const pibgFee = window.calculateSpecificItemCost(o, 'PIBG');
                 return `
@@ -639,19 +546,11 @@
         window.renderAdminNametags = () => {
              const tb = document.getElementById('adm-tag-body');
              if(!tb) return;
-             // Get IDs of all items considered as nametags
              const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
-             
-             // Filter orders that have at least one nametag item
              const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)));
-             
              tb.innerHTML = list.length ? list.map(o => {
-                // Calculate total quantity of nametags for this order
                 let qty = 0;
-                Object.keys(o.items).forEach(k => {
-                    if(tagItems.includes(k)) qty += o.items[k];
-                });
-
+                Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
                 return `
                 <tr class="border-b hover:bg-purple-50 text-sm">
                     <td class="p-3 uppercase font-medium">${o.name}</td>
@@ -668,94 +567,74 @@
             tb.innerHTML = sorted.map(o => `<tr class="border-b text-xs"><td class="p-3 text-slate-400 font-mono">${new Date(o.timestamp).toLocaleString('ms-MY')}</td><td class="p-3 font-bold text-blue-600">ORDER</td><td class="p-3 uppercase">Tempahan oleh ${o.name} (RM ${o.total.toFixed(2)})</td></tr>`).join('');
         };
 
-        // --- BULK & DELETE ACTIONS ---
-        window.toggleSelectAll = (source, selector) => document.querySelectorAll(selector).forEach(box => box.checked = source.checked);
+        // --- ADMIN SETTINGS (TELEGRAM) ---
+        window.renderAdminSettings = async () => {
+            const tokenInput = document.getElementById('tg-token');
+            const chatInput = document.getElementById('tg-chat-id');
+            // Populate if already fetched
+            if(window.appConfig.telegramBotToken) tokenInput.value = window.appConfig.telegramBotToken;
+            if(window.appConfig.telegramChatId) chatInput.value = window.appConfig.telegramChatId;
+        };
 
+        window.saveAdminSettings = async () => {
+            const token = document.getElementById('tg-token').value.trim();
+            const chatId = document.getElementById('tg-chat-id').value.trim();
+            const btn = document.getElementById('btn-save-settings');
+            
+            btn.innerText = "MENYIMPAN...";
+            btn.disabled = true;
+
+            try {
+                const newData = { telegramBotToken: token, telegramChatId: chatId };
+                await setDoc(configDocRef, newData, { merge: true });
+                window.appConfig = newData; // Update local state
+                alert("Tetapan berjaya disimpan!");
+            } catch(e) {
+                alert("Gagal simpan: " + e.message);
+            } finally {
+                btn.innerText = "SIMPAN TETAPAN";
+                btn.disabled = false;
+            }
+        };
+
+        // --- BULK ACTIONS ---
+        window.toggleSelectAll = (source, selector) => document.querySelectorAll(selector).forEach(box => box.checked = source.checked);
         window.deleteSelectedOrders = async () => {
              const cbs = document.querySelectorAll('.order-checkbox:checked');
              if(!cbs.length) return alert("Pilih tempahan dahulu.");
              if(confirm(`Padam ${cbs.length} tempahan?`)) {
                  const btn = document.querySelector('button[onclick="window.deleteSelectedOrders()"]');
-                 const oldText = btn.innerHTML;
-                 btn.innerHTML = '<span class="loader w-3 h-3"></span>';
-                 btn.disabled = true;
-                 
-                 try {
-                     const batch = writeBatch(db);
-                     cbs.forEach(cb => batch.delete(doc(db, 'book_orders', cb.dataset.id)));
-                     await batch.commit();
-                     document.getElementById('orderSelectAll').checked = false;
-                 } catch(e) {
-                     alert("Gagal: " + e.message);
-                 } finally {
-                     btn.innerHTML = oldText;
-                     btn.disabled = false;
-                 }
+                 const old = btn.innerHTML; btn.innerHTML = 'PROSES...'; btn.disabled = true;
+                 try { const batch = writeBatch(db); cbs.forEach(cb => batch.delete(doc(db, 'book_orders', cb.dataset.id))); await batch.commit(); document.getElementById('orderSelectAll').checked = false; }
+                 catch(e) { alert("Gagal: " + e.message); } finally { btn.innerHTML = old; btn.disabled = false; }
              }
         };
-
         window.deleteSelectedItems = async () => {
              const cbs = document.querySelectorAll('.inv-checkbox:checked');
              if(!cbs.length) return alert("Pilih item dahulu.");
              if(confirm(`Padam ${cbs.length} item?`)) {
                  const btn = document.querySelector('button[onclick="window.deleteSelectedItems()"]');
-                 const oldText = btn.innerHTML;
-                 btn.innerHTML = '<span class="loader w-3 h-3"></span>';
-                 btn.disabled = true;
-
-                 try {
-                     const batch = writeBatch(db);
-                     cbs.forEach(cb => batch.delete(doc(db, 'book_items', cb.dataset.id)));
-                     await batch.commit();
-                     document.getElementById('invSelectAll').checked = false;
-                 } catch(e) {
-                     alert("Gagal: " + e.message);
-                 } finally {
-                     btn.innerHTML = oldText;
-                     btn.disabled = false;
-                 }
+                 const old = btn.innerHTML; btn.innerHTML = 'PROSES...'; btn.disabled = true;
+                 try { const batch = writeBatch(db); cbs.forEach(cb => batch.delete(doc(db, 'book_items', cb.dataset.id))); await batch.commit(); document.getElementById('invSelectAll').checked = false; }
+                 catch(e) { alert("Gagal: " + e.message); } finally { btn.innerHTML = old; btn.disabled = false; }
              }
         };
-
         window.deleteInventoryItem = async (id, btn) => {
             if(confirm("Padam item ini?")) {
-                const oldContent = btn.innerHTML;
-                btn.innerHTML = '<span class="loader w-4 h-4 border-red-500 border-t-transparent"></span>';
-                btn.disabled = true;
-                
-                try {
-                    await deleteDoc(doc(db, 'book_items', id));
-                } catch(e) { 
-                    alert("Ralat: " + e.message); 
-                    btn.innerHTML = oldContent;
-                    btn.disabled = false;
-                }
+                const old = btn.innerHTML; btn.innerHTML = '...'; btn.disabled = true;
+                try { await deleteDoc(doc(db, 'book_items', id)); } catch(e) { alert("Ralat: " + e.message); btn.innerHTML = old; btn.disabled = false; }
             }
         };
 
-        // --- FIREBASE LISTENERS ---
+        // --- LISTENERS ---
         const init = async () => {
             try {
-                // Listen for Auth changes first
                 onAuthStateChanged(auth, (user) => {
-                    if (user && !user.isAnonymous) {
-                         // Named user (Admin)
-                         window.isAdminUser = true;
-                         if(!document.getElementById('adminLoginModal').classList.contains('hidden')) {
-                             window.closeAdminModal();
-                             window.switchView('admin');
-                         }
-                    } else {
-                         // Anonymous or Null
-                         window.isAdminUser = false;
-                    }
+                    if (user && !user.isAnonymous) { window.isAdminUser = true; if(!document.getElementById('adminLoginModal').classList.contains('hidden')) { window.closeAdminModal(); window.switchView('admin'); } }
+                    else window.isAdminUser = false;
                 });
-
-                // Always allow anonymous login for public access (parents)
-                // If already logged in (as admin or anon), this is handled safely by Firebase SDK
-                await signInAnonymously(auth).catch(e => console.log("Silent login / Public access active."));
+                await signInAnonymously(auth).catch(e => console.log("Public access active."));
                 
-                // --- SNAPSHOTS ---
                 onSnapshot(query(itemsColl), (snap) => {
                     const all = []; snap.forEach(d => all.push({ id: d.id, ...d.data() }));
                     window.itemsA = all.filter(i => i.category === 'A').sort((a,b)=> (a.order||0)-(b.order||0));
@@ -769,215 +648,146 @@
                          if(currentTab) window.setAdminTab(currentTab);
                     }
                 });
-            } catch(e) { console.error("Initialization Error", e); }
+                // Fetch Settings once on load
+                const snap = await getDoc(configDocRef);
+                if(snap.exists()) window.appConfig = snap.data();
+            } catch(e) { console.error("Init Error", e); }
         };
         window.addEventListener('DOMContentLoaded', init);
 
-        // Modals & Helpers
-        window.openAdminModal = () => {
-            if(window.isAdminUser) window.switchView('admin');
-            else document.getElementById('adminLoginModal').classList.remove('hidden');
-        };
-        
+        // --- OTHER UTILS ---
+        window.openAdminModal = () => { if(window.isAdminUser) window.switchView('admin'); else document.getElementById('adminLoginModal').classList.remove('hidden'); };
         window.closeAdminModal = () => document.getElementById('adminLoginModal').classList.add('hidden');
-        
-        // --- LOGIN FUNCTIONS (UPDATED) ---
         window.loginWithEmail = async () => {
-            const email = document.getElementById('adminEmailInput').value.trim();
-            const pass = document.getElementById('adminPasswordInput').value;
-            
-            if(!email || !pass) {
-                alert("Sila masukkan email dan kata laluan.");
-                return;
-            }
-
-            try {
-                // Cuba log masuk
-                await signInWithEmailAndPassword(auth, email, pass);
-                // Jika berjaya, onAuthStateChanged akan menguruskan peralihan view
-            } catch(e) {
-                // PAPARKAN ERROR CODE UNTUK DEBUGGING
-                console.error("Login Error:", e);
-                let msg = "Log masuk gagal.";
-                if(e.code === 'auth/invalid-email') msg = "Format email tidak sah.";
-                else if(e.code === 'auth/user-not-found') msg = "Pengguna tidak dijumpai. Pastikan email betul.";
-                else if(e.code === 'auth/wrong-password') msg = "Kata laluan salah.";
-                else if(e.code === 'auth/too-many-requests') msg = "Terlalu banyak percubaan. Sila tunggu sebentar.";
-                
-                alert(`Ralat (${e.code}): ${msg}\n\nInfo Lanjut: ${e.message}`);
-            }
+            const email = document.getElementById('adminEmailInput').value.trim(); const pass = document.getElementById('adminPasswordInput').value;
+            if(!email || !pass) { alert("Sila masukkan email dan kata laluan."); return; }
+            try { await signInWithEmailAndPassword(auth, email, pass); } catch(e) { alert("Log masuk gagal: " + e.code); }
         };
+        window.loginWithGoogle = async () => { try { await signInWithPopup(auth, googleProvider); } catch(e) { alert("Ralat Google: " + e.message); } };
+        window.logoutAdmin = () => { if(window.isAdminUser) signOut(auth).then(() => { window.isAdminUser = false; window.goHome(); }); else window.goHome(); };
         
-        window.loginWithGoogle = async () => {
-             try {
-                 await signInWithPopup(auth, googleProvider);
-             } catch(e) {
-                 alert(`Ralat Google Login (${e.code}): ${e.message}`);
-             }
-        };
-        
-        window.logoutAdmin = () => {
-            if(window.isAdminUser) {
-                signOut(auth).then(() => {
-                    window.isAdminUser = false;
-                    window.goHome();
-                });
-            } else {
-                window.goHome();
-            }
-        };
-
-        // --- UPDATE ADD ITEM MODAL: REMOVE CHECKBOX ---
         window.openAddItemModal = () => document.getElementById('addItemModal').classList.remove('hidden');
         window.closeAddItemModal = () => document.getElementById('addItemModal').classList.add('hidden');
         window.saveNewItem = async () => {
-             const name = document.getElementById('newItemName').value;
-             const price = parseFloat(document.getElementById('newItemPrice').value);
-             const category = document.getElementById('newItemCategory').value;
-             // No more Checkbox logic needed here
-             
+             const name = document.getElementById('newItemName').value; const price = parseFloat(document.getElementById('newItemPrice').value); const category = document.getElementById('newItemCategory').value;
              if(!name || isNaN(price)) return alert("Isi semua data.");
-             
-             const btn = document.getElementById('btnSaveItem');
-             const oldText = btn.innerText;
-             btn.innerText = "SIMPAN...";
-             btn.disabled = true;
-
-             // Guna itemsColl yang sudah ditetapkan ke root 'book_items'
-             // Removed 'isNametag' property, relying on name string matching instead
-             try {
-                await addDoc(itemsColl, { name, price, category, order: Date.now() });
-                window.closeAddItemModal();
-                document.getElementById('newItemName').value = '';
-                document.getElementById('newItemPrice').value = '';
-             } catch(e) {
-                alert("Gagal simpan: " + e.message);
-             } finally {
-                btn.innerText = oldText;
-                btn.disabled = false;
-             }
+             const btn = document.getElementById('btnSaveItem'); btn.innerText = "SIMPAN..."; btn.disabled = true;
+             try { await addDoc(itemsColl, { name, price, category, order: Date.now() }); window.closeAddItemModal(); document.getElementById('newItemName').value = ''; document.getElementById('newItemPrice').value = ''; }
+             catch(e) { alert("Gagal: " + e.message); } finally { btn.innerText = "SIMPAN"; btn.disabled = false; }
         };
 
-        // --- UPDATED PAYMENT MODAL LOGIC (HISTORY & ADD NEW) ---
         window.openPaymentModal = (id) => {
             window.selectedOrderIdForPayment = id;
             const order = window.orders.find(o => o.id === id);
             if (!order) return;
-
-            // Render History List
-            const listEl = document.getElementById('paymentHistoryList');
-            listEl.innerHTML = '';
-            
+            const listEl = document.getElementById('paymentHistoryList'); listEl.innerHTML = '';
             let logs = order.paymentLogs || [];
-            // Fallback: If no logs exist but there is a paid amount > 0, treat it as a legacy payment record
-            if (logs.length === 0 && (order.paid || 0) > 0) {
-                logs = [{ date: "Rekod Lama", amount: order.paid }];
-            }
-
+            if (logs.length === 0 && (order.paid || 0) > 0) logs = [{ date: "Rekod Lama", amount: order.paid }];
             if (logs.length > 0) {
                 logs.forEach((log, idx) => {
-                    // Handle date formatting if it's a timestamp or string
                     let dateStr = log.date; 
-                    if(typeof log.date === 'number') {
-                        dateStr = new Date(log.date).toLocaleDateString('ms-MY') + ' ' + new Date(log.date).toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'});
-                    }
-
-                    listEl.innerHTML += `
-                        <div class="flex justify-between items-center text-xs border-b border-slate-100 py-2">
-                            <span class="text-slate-500 font-mono">${idx + 1}. ${dateStr}</span>
-                            <span class="font-bold text-slate-700">RM ${parseFloat(log.amount).toFixed(2)}</span>
-                        </div>
-                    `;
+                    if(typeof log.date === 'number') dateStr = new Date(log.date).toLocaleDateString('ms-MY') + ' ' + new Date(log.date).toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'});
+                    listEl.innerHTML += `<div class="flex justify-between items-center text-xs border-b border-slate-100 py-2"><span class="text-slate-500 font-mono">${idx + 1}. ${dateStr}</span><span class="font-bold text-slate-700">RM ${parseFloat(log.amount).toFixed(2)}</span></div>`;
                 });
-            } else {
-                listEl.innerHTML = '<p class="text-center text-slate-400 text-xs py-4 italic bg-slate-50 rounded-lg">Tiada rekod bayaran terdahulu.</p>';
-            }
-
-            // Calculate totals
-            const total = order.total || 0;
-            const paid = order.paid || 0;
-            const balance = total - paid;
-
-            // Update UI Displays
+            } else listEl.innerHTML = '<p class="text-center text-slate-400 text-xs py-4 italic bg-slate-50 rounded-lg">Tiada rekod bayaran terdahulu.</p>';
+            const total = order.total || 0; const paid = order.paid || 0; const balance = total - paid;
             document.getElementById('paymentModalTotal').innerText = `RM ${total.toFixed(2)}`;
             document.getElementById('paymentModalPaid').innerText = `RM ${paid.toFixed(2)}`;
-            document.getElementById('paymentModalBalance').innerText = `RM ${balance.toFixed(2)}`;
-            
-            // Set balance text color
-            const balEl = document.getElementById('paymentModalBalance');
-            if(balance > 0) balEl.className = "font-black text-red-500 text-lg";
-            else balEl.className = "font-black text-green-500 text-lg";
-
-            document.getElementById('paymentInput').value = ''; // Reset input for new entry
-            document.getElementById('paymentModal').classList.remove('hidden');
+            const balEl = document.getElementById('paymentModalBalance'); balEl.innerText = `RM ${balance.toFixed(2)}`;
+            balEl.className = balance > 0 ? "font-black text-red-500 text-lg" : "font-black text-green-500 text-lg";
+            document.getElementById('paymentInput').value = ''; document.getElementById('paymentModal').classList.remove('hidden');
         };
-
         window.closePaymentModal = () => document.getElementById('paymentModal').classList.add('hidden');
         
+        // --- UPDATED SAVE PAYMENT FUNCTION (Fixes Issue) ---
         window.savePayment = async () => {
-            const val = parseFloat(document.getElementById('paymentInput').value);
+            const val = parseFloat(document.getElementById('paymentInput').value); 
             const orderId = window.selectedOrderIdForPayment;
-            const order = window.orders.find(o => o.id === orderId);
-
+            
             if (orderId && !isNaN(val) && val > 0) {
-                // Construct new log entry
-                const newLog = {
-                    date: new Date().toLocaleDateString('ms-MY') + ' ' + new Date().toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'}),
-                    timestamp: Date.now(),
-                    amount: val
-                };
-
-                const currentPaid = order.paid || 0;
-                const newTotalPaid = currentPaid + val;
-                
-                // Handle existing logs array
-                let currentLogs = order.paymentLogs || [];
-                
-                // If this is the first time we are adding logs to an old record that had payments but no logs
-                if (currentLogs.length === 0 && currentPaid > 0) {
-                    currentLogs.push({ date: "Rekod Lama", timestamp: Date.now(), amount: currentPaid });
-                }
-
-                const updatedLogs = [...currentLogs, newLog];
-
-                const btn = document.querySelector('#paymentModal button.bg-brand-600');
-                const oldText = btn.innerText;
-                btn.innerText = "...";
+                // UI Feedback
+                const btn = document.querySelector('button[onclick="window.savePayment()"]');
+                const originalText = btn.innerText;
+                btn.innerText = "SIMPAN...";
                 btn.disabled = true;
 
                 try {
-                    await updateDoc(doc(db, 'book_orders', orderId), { 
-                        paid: newTotalPaid,
-                        paymentLogs: updatedLogs
+                    const order = window.orders.find(o => o.id === orderId);
+                    if(!order) throw new Error("Data tempahan tidak dijumpai.");
+
+                    // Prepare data
+                    const currentPaid = parseFloat(order.paid) || 0;
+                    const newTotalPaid = currentPaid + val;
+                    
+                    // Handle Logs (Clone array to avoid mutation issues)
+                    let logs = [];
+                    if (order.paymentLogs && Array.isArray(order.paymentLogs)) {
+                        logs = [...order.paymentLogs];
+                    }
+
+                    // Legacy migration: If paid > 0 but no logs, add a 'Legacy' log entry
+                    if (logs.length === 0 && currentPaid > 0) {
+                        logs.push({
+                            date: "Rekod Lama",
+                            timestamp: Date.now(),
+                            amount: currentPaid
+                        });
+                    }
+
+                    // Create new log entry
+                    const newLog = { 
+                        date: new Date().toLocaleDateString('ms-MY') + ' ' + new Date().toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'}), 
+                        timestamp: Date.now(), 
+                        amount: val 
+                    };
+                    logs.push(newLog);
+
+                    // Firestore Update
+                    const orderRef = doc(db, 'book_orders', orderId);
+                    await updateDoc(orderRef, { 
+                        paid: newTotalPaid, 
+                        paymentLogs: logs 
                     });
+
+                    // Success
+                    alert("Bayaran berjaya dikemaskini!");
                     window.closePaymentModal();
-                } catch(e) {
-                    alert("Ralat: " + e.message);
+                    
+                } catch(e) { 
+                    console.error("Save Payment Error:", e);
+                    alert("Gagal simpan bayaran: " + e.message + "\nSila pastikan anda login sebagai Admin."); 
                 } finally {
-                    btn.innerText = oldText;
+                    btn.innerText = originalText;
                     btn.disabled = false;
                 }
             } else {
-                alert("Sila masukkan jumlah bayaran yang sah (Lebih dari 0).");
+                alert("Sila masukkan jumlah bayaran yang sah (Nombor sahaja).");
             }
         };
 
-        window.updateTagStatus = async (id, cur) => await updateDoc(doc(db, 'book_orders', id), { tagStatus: !cur });
-
-        // --- FUNGSI TOGGLE PASSWORD ---
-        window.togglePassword = () => {
-            const inp = document.getElementById('adminPasswordInput');
-            const icon = document.getElementById('passIcon');
-            if (inp.type === "password") {
-                inp.type = "text";
-                icon.classList.remove('fa-eye');
-                icon.classList.add('fa-eye-slash');
-            } else {
-                inp.type = "password";
-                icon.classList.remove('fa-eye-slash');
-                icon.classList.add('fa-eye');
-            }
+        window.exportPibgCsv = () => {
+            const data = [["Nama Murid", "Nama Penjaga", "Yuran PIBG (RM)", "Status"]];
+            window.orders.forEach(o => { const c = window.calculateSpecificItemCost(o, 'PIBG'); if(c>0) data.push([`"${o.name}"`, `"${o.parent}"`, c.toFixed(2), (o.paid>=o.total?"SELESAI":"BELUM")]); });
+            window.generateCSV(data, "Laporan_PIBG.csv");
         };
+        window.exportPibgPdf = () => {
+            const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.text("Laporan Yuran PIBG 2026", 14, 20);
+            const body = []; window.orders.forEach(o => { const c = window.calculateSpecificItemCost(o, 'PIBG'); if(c>0) body.push([o.name, o.parent, `RM ${c.toFixed(2)}`, (o.paid>=o.total?"SELESAI":"BELUM")]); });
+            doc.autoTable({ head: [['Nama Murid', 'Penjaga', 'Yuran PIBG', 'Status']], body: body, startY: 30 }); doc.save("Laporan_PIBG.pdf");
+        };
+        window.exportNametagCsv = () => {
+             const data = [["Nama Murid", "Tag Nama", "Kuantiti"]]; const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
+             window.orders.forEach(o => { if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) { let qty = 0; Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; }); data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, qty]); } });
+             window.generateCSV(data, "Senarai_Nametag.csv");
+        };
+        window.exportNametagPdf = () => {
+            const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.text("Senarai Tempahan Nametag", 14, 20); const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
+            const body = []; window.orders.forEach(o => { if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) { let qty = 0; Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; }); body.push([o.name, o.tagName || '-', qty]); } });
+            doc.autoTable({ head: [['Nama Murid', 'Teks Tag Nama', 'Kuantiti']], body: body, startY: 30 }); doc.save("Senarai_Nametag.pdf");
+        };
+        window.generateCSV = (data, filename) => { const c = "data:text/csv;charset=utf-8," + data.map(e => e.join(",")).join("\n"); const l = document.createElement("a"); l.setAttribute("href", encodeURI(c)); l.setAttribute("download", filename); document.body.appendChild(l); l.click(); document.body.removeChild(l); };
+
+        window.togglePassword = () => { const i = document.getElementById('adminPasswordInput'); const c = document.getElementById('passIcon'); if (i.type === "password") { i.type = "text"; c.className="fas fa-eye-slash"; } else { i.type = "password"; c.className="fas fa-eye"; } };
     </script>
 </head>
 <body class="bg-slate-50 flex flex-col min-h-screen text-slate-800">
@@ -1147,6 +957,12 @@
                     <i class="fas fa-history text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
                     <span class="hidden md:inline ml-3 text-sm font-medium">Log Aktiviti</span>
                 </button>
+
+                 <!-- Tetapan -->
+                 <button onclick="window.setAdminTab('settings')" id="nav-settings" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group mt-4">
+                    <i class="fas fa-cog text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
+                    <span class="hidden md:inline ml-3 text-sm font-medium">Tetapan</span>
+                </button>
             </nav>
 
             <!-- Logout -->
@@ -1186,7 +1002,38 @@
                 <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Tempahan Nametag</h2><div class="flex gap-2"><button onclick="window.exportNametagCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
                 <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Kuantiti</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
+            
             <div id="adm-log" class="hidden admin-tab animate-fadeUp"><h2 class="text-2xl font-bold text-slate-800 mb-6">Log Aktiviti</h2><div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 font-bold text-xs uppercase text-slate-500"><tr><th class="p-4 w-40">Masa</th><th class="p-4 w-32">Aksi</th><th class="p-4">Perincian</th></tr></thead><tbody id="adm-log-body" class="divide-y divide-slate-100"></tbody></table></div></div>
+
+            <!-- New Settings Tab -->
+            <div id="adm-settings" class="hidden admin-tab animate-fadeUp">
+                <h2 class="text-2xl font-bold text-slate-800 mb-2">Tetapan Sistem</h2>
+                <p class="text-slate-500 text-sm mb-6">Konfigurasi notifikasi dan integrasi luar.</p>
+
+                <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 max-w-2xl">
+                    <h3 class="font-bold text-lg text-slate-800 mb-4 flex items-center"><i class="fab fa-telegram text-blue-500 mr-2"></i> Notifikasi Telegram</h3>
+                    <p class="text-xs text-slate-500 mb-6 bg-blue-50 p-4 rounded-lg border border-blue-100 leading-relaxed">
+                        Sistem boleh menghantar notifikasi automatik ke dalam group Telegram apabila ibu bapa menghantar tempahan baru.<br><br>
+                        <b>Cara Setup:</b><br>
+                        1. Buat bot baru di Telegram menggunakan <b>@BotFather</b> dan dapatkan <b>Token</b>.<br>
+                        2. Buat Group baru, masukkan Bot anda ke dalamnya, dan jadikan Bot sebagai <b>Admin</b>.<br>
+                        3. Dapatkan <b>Chat ID</b> group tersebut (boleh guna bot seperti @getmyid_bot).
+                    </p>
+                    
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Telegram Bot Token</label>
+                            <input type="text" id="tg-token" class="w-full border border-slate-200 p-3 rounded-lg outline-none focus:border-brand-500 font-mono text-sm" placeholder="Contoh: 123456789:AAH...">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Telegram Group Chat ID</label>
+                            <input type="text" id="tg-chat-id" class="w-full border border-slate-200 p-3 rounded-lg outline-none focus:border-brand-500 font-mono text-sm" placeholder="Contoh: -1001234567890">
+                        </div>
+                        <button id="btn-save-settings" onclick="window.saveAdminSettings()" class="bg-brand-600 hover:bg-brand-700 text-white px-6 py-3 rounded-xl font-bold text-sm shadow-lg mt-2">SIMPAN TETAPAN</button>
+                    </div>
+                </div>
+            </div>
+
         </main>
     </div>
 
