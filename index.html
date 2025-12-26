@@ -28,6 +28,48 @@
         }
     </script>
 
+    <!-- CSS Khas untuk Cetakan -->
+    <style>
+        @media print {
+            .no-print, .no-print * {
+                display: none !important;
+            }
+            body {
+                background-color: white;
+                -webkit-print-color-adjust: exact;
+            }
+            #receiptView {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                margin: 0;
+                padding: 0;
+                background-color: white;
+                z-index: 9999;
+            }
+            #receiptContent {
+                box-shadow: none !important;
+                border: none !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                width: 100% !important;
+            }
+        }
+        /* Loading Spinner */
+        .loader {
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid #6d28d9;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -65,6 +107,36 @@
         window.chartP = null;
         window.selectedOrderIdForPayment = null;
         window.isAdminUser = false;
+
+        // --- HELPER UNTUK KIRA KOS ITEM TERTENTU DALAM ORDER ---
+        window.calculateSpecificItemCost = (order, keywordStr, excludeStr = null) => {
+            let total = 0;
+            const keywords = keywordStr.split(',');
+            const excludes = excludeStr ? excludeStr.split(',') : [];
+            const allItems = [...window.itemsA, ...window.itemsB];
+
+            if(order.items) {
+                Object.entries(order.items).forEach(([itemId, qty]) => {
+                    const item = allItems.find(i => i.id === itemId);
+                    if(item) {
+                        const name = item.name.toUpperCase();
+                        const matchesKeyword = keywords.some(k => name.includes(k.trim().toUpperCase()));
+                        const matchesExclude = excludes.length > 0 && excludes.some(e => name.includes(e.trim().toUpperCase()));
+                        
+                        if(matchesKeyword && !matchesExclude) {
+                            total += (item.price * qty);
+                        }
+                    }
+                });
+            }
+            return total;
+        };
+
+        // --- HELPER: CHECK IF ITEM IS NAMETAG ---
+        window.isNametagItem = (name) => {
+            const n = name.toUpperCase();
+            return n.includes('NAMETAG') || n.includes('TAG NAMA');
+        };
 
         // --- NAVIGATION ---
         window.goHome = () => {
@@ -155,6 +227,19 @@
             if(document.getElementById('mobileGrandTotal')) document.getElementById('mobileGrandTotal').innerText = totalStr;
         };
 
+        // Helper to count characters
+        window.updateCharCount = (input) => {
+            const max = 12;
+            const current = input.value.length;
+            const counterId = input.id.replace('tagNameInput-', 'charCount-');
+            const counter = document.getElementById(counterId);
+            if(counter) {
+                counter.innerText = `${current}/${max}`;
+                if(current >= max) counter.classList.add('text-red-500');
+                else counter.classList.remove('text-red-500');
+            }
+        };
+
         window.renderUserForm = () => {
             const tA = document.getElementById('tbody-a');
             const tB = document.getElementById('tbody-b');
@@ -174,11 +259,22 @@
             
             // Kategori B
             if(window.itemsB.length) {
-                tB.innerHTML = window.itemsB.map(i => `
+                tB.innerHTML = window.itemsB.map(i => {
+                    const isTag = window.isNametagItem(i.name);
+                    return `
                     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
                         <td class="p-4">
                             <div class="font-medium text-slate-700 uppercase">${i.name}</div>
-                            ${i.isNametag ? `<div id="tagInput-${i.id}" class="hidden mt-2"><input type="text" id="tagNameInput-${i.id}" class="w-full border p-2 text-xs rounded uppercase" placeholder="NAMA PADA TAG"></div>` : ''}
+                            ${isTag ? `
+                                <div id="tagInput-${i.id}" class="hidden mt-3 bg-blue-50 p-3 rounded-lg border border-blue-100 animate-fadeUp">
+                                    <label class="text-[10px] font-bold text-blue-600 uppercase mb-1 block">Nama Pada Tag (Wajib)</label>
+                                    <input type="text" id="tagNameInput-${i.id}" maxlength="12" oninput="window.updateCharCount(this)" class="w-full border border-blue-200 p-2 text-sm rounded uppercase font-bold text-slate-700 focus:outline-none focus:border-blue-500" placeholder="ALI BIN ABU">
+                                    <div class="flex justify-between mt-1">
+                                        <span class="text-[9px] text-blue-400">* Termasuk jarak</span>
+                                        <span id="charCount-${i.id}" class="text-[9px] font-bold text-slate-400">0/12</span>
+                                    </div>
+                                </div>
+                            ` : ''}
                         </td>
                         <td class="p-4 text-center text-sm text-slate-500">RM ${i.price.toFixed(2)}</td>
                         <td class="p-4 text-center">
@@ -189,7 +285,8 @@
                             </div>
                         </td>
                         <td class="p-4 text-right font-bold text-slate-700" id="sub-${i.id}">0.00</td>
-                    </tr>`).join('');
+                    </tr>`;
+                }).join('');
             } else tB.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item pilihan.</td></tr>';
             window.calcAll();
         };
@@ -210,9 +307,9 @@
                 selectedItemsB.forEach(item => {
                     const qty = window.cartState[item.id];
                     let meta = '';
-                    if(item.isNametag) {
+                    if(window.isNametagItem(item.name)) {
                         const val = document.getElementById(`tagNameInput-${item.id}`)?.value.toUpperCase() || 'TIADA NAMA';
-                        meta = `<div class="text-[10px] text-purple-600 font-bold bg-purple-50 inline-block px-1 rounded border border-purple-100 mt-1">${val}</div>`;
+                        meta = `<div class="text-[10px] text-purple-600 font-bold bg-purple-50 inline-block px-2 py-0.5 rounded border border-purple-100 mt-1"><i class="fas fa-tag mr-1"></i> ${val}</div>`;
                     }
                     tbody.innerHTML += `<tr class="border-b border-slate-50 text-sm"><td class="py-2 pl-2"><div class="uppercase">${item.name}</div>${meta}</td><td class="py-2 text-center">${qty}</td><td class="py-2 pr-2 text-right font-medium">RM ${(item.price * qty).toFixed(2)}</td></tr>`;
                 });
@@ -220,13 +317,19 @@
         };
 
         window.submitOrder = async () => {
-            // FIX: Pastikan pengguna disahkan (Login) sebelum hantar data
-            // Ralat "Permission denied" biasanya sebab pengguna belum login (Anonymous atau Admin)
+            // Butang loading state
+            const btn = document.querySelector('button[onclick="window.submitOrder()"]');
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '<span class="loader mr-2"></span> PROSES...';
+            btn.disabled = true;
+
             if (!auth.currentUser) {
                 try {
                     await signInAnonymously(auth);
                 } catch (authError) {
-                    alert("Ralat Sistem: Tidak dapat log masuk (Anonymous Auth). Sila pastikan 'Anonymous' diaktifkan di Firebase Console.\n\nError: " + authError.message);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                    alert("Ralat Sistem: Tidak dapat log masuk (Anonymous Auth). " + authError.message);
                     return;
                 }
             }
@@ -235,30 +338,51 @@
             const parent = document.getElementById('parentName').value.toUpperCase();
             const phone = document.getElementById('parentPhone').value;
             const total = parseFloat(document.getElementById('grandTotalDisplay').innerText.replace('RM ', ''));
-            if(!name || !parent || !phone) { alert("Sila isi semua maklumat."); return; }
+            if(!name || !parent || !phone) { 
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+                alert("Sila isi semua maklumat."); 
+                return; 
+            }
 
             let items = {};
             Object.entries(window.cartState).forEach(([id, qty]) => { if(qty > 0) items[id] = qty; });
 
-            const tagItems = window.itemsB.filter(i => i.isNametag);
+            const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name));
             let tagName = "";
+            let hasTag = false;
+
             for(let t of tagItems) {
                 if(items[t.id]) {
-                    tagName = document.getElementById(`tagNameInput-${t.id}`).value.toUpperCase();
-                    if(!tagName) { alert("Sila isi Nama pada Tag."); return; }
+                    hasTag = true;
+                    tagName = document.getElementById(`tagNameInput-${t.id}`).value.toUpperCase().trim();
+                    if(!tagName) { 
+                        btn.innerHTML = originalText;
+                        btn.disabled = false;
+                        alert("Sila isi NAMA PADA TAG untuk item " + t.name); 
+                        return; 
+                    }
+                    if(tagName.length > 12) { 
+                        btn.innerHTML = originalText;
+                        btn.disabled = false;
+                        alert("Nama pada tag tidak boleh melebihi 12 huruf."); 
+                        return; 
+                    }
                     break; 
                 }
             }
             
             const orderData = { date: new Date().toLocaleDateString('ms-MY'), timestamp: Date.now(), name, parent, phone, total, paid: 0, items, tagName, tagStatus: false };
             try {
-                // Menggunakan ordersColl yang telah ditetapkan kepada 'book_orders'
                 const ref = await addDoc(ordersColl, orderData);
                 window.currentReceipt = { id: ref.id, ...orderData };
                 window.renderReceiptView(window.currentReceipt);
             } catch(e) { 
                 console.error(e);
-                alert("Gagal menghantar tempahan!\n\nKemungkinan Punca:\n1. 'Anonymous Auth' belum ON di Firebase Console.\n2. Rules Firestore tidak membenarkan akses.\n\nKod Ralat: " + e.message); 
+                alert("Gagal menghantar tempahan! Sila pastikan talian internet stabil.\n\nKod Ralat: " + e.message); 
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
             }
         };
 
@@ -267,10 +391,9 @@
             const phone = document.getElementById('checkPhone').value.trim();
             const resDiv = document.getElementById('checkResults');
             if(!phone) { alert("Masukkan No. Telefon."); return; }
-            resDiv.innerHTML = '<p class="text-center text-slate-400 py-4">Sedang mencari...</p>';
+            resDiv.innerHTML = '<div class="text-center py-4"><span class="loader border-slate-300 border-t-blue-600"></span><p class="text-slate-400 text-xs mt-2">Sedang mencari...</p></div>';
             
             try {
-                // Menggunakan ordersColl yang telah ditetapkan kepada 'book_orders'
                 const q = query(ordersColl, where("phone", "==", phone));
                 const snap = await getDocs(q);
                 if(snap.empty) { resDiv.innerHTML = '<div class="text-center py-4 bg-slate-50 rounded">Tiada rekod dijumpai.</div>'; return; }
@@ -316,13 +439,13 @@
             const tb = document.getElementById('r-body');
             tb.innerHTML = '';
             
-            // Render Items
             window.itemsA.forEach(i => { tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${i.name}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">1</td><td class="border-b py-2 text-right">${i.price.toFixed(2)}</td></tr>`; });
             if(data.items) {
                 Object.entries(data.items).forEach(([id, qty]) => {
                     const i = window.itemsB.find(x => x.id === id);
                     if(i) {
-                        let n = i.name; if(i.isNametag && data.tagName) n+=` (${data.tagName})`;
+                        let n = i.name; 
+                        if(window.isNametagItem(i.name) && data.tagName) n+=` (${data.tagName})`;
                         tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${n}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">${qty}</td><td class="border-b py-2 text-right">${(i.price*qty).toFixed(2)}</td></tr>`;
                     }
                 });
@@ -358,11 +481,11 @@
         };
 
         window.exportPibgCsv = () => {
-            const data = [["Nama Murid", "Nama Penjaga", "Bayaran (RM)", "Status"]];
-            const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
+            const data = [["Nama Murid", "Nama Penjaga", "Yuran PIBG (RM)", "Status"]];
             window.orders.forEach(o => {
-                if(o.items && Object.keys(o.items).some(k => pibgItems.includes(k))) {
-                     data.push([`"${o.name}"`, `"${o.parent}"`, o.paid.toFixed(2), (o.paid>=o.total ? "SELESAI" : "BELUM")]);
+                const pibgCost = window.calculateSpecificItemCost(o, 'PIBG');
+                if(pibgCost > 0) {
+                     data.push([`"${o.name}"`, `"${o.parent}"`, pibgCost.toFixed(2), (o.paid>=o.total ? "SELESAI" : "BELUM")]);
                 }
             });
             window.generateCSV(data, "Laporan_PIBG.csv");
@@ -372,70 +495,21 @@
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
             doc.text("Laporan Yuran PIBG 2026", 14, 20);
-            const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
-            const body = window.orders
-                .filter(o => o.items && Object.keys(o.items).some(k => pibgItems.includes(k)))
-                .map(o => [o.name, o.parent, `RM ${o.paid.toFixed(2)}`, (o.paid >= o.total ? "SELESAI" : "BELUM")]);
-            doc.autoTable({ head: [['Nama Murid', 'Penjaga', 'Bayaran', 'Status']], body: body, startY: 30 });
+            
+            const body = [];
+            window.orders.forEach(o => {
+                const pibgCost = window.calculateSpecificItemCost(o, 'PIBG');
+                if(pibgCost > 0) {
+                    body.push([o.name, o.parent, `RM ${pibgCost.toFixed(2)}`, (o.paid >= o.total ? "SELESAI" : "BELUM")]);
+                }
+            });
+            doc.autoTable({ head: [['Nama Murid', 'Penjaga', 'Yuran PIBG', 'Status']], body: body, startY: 30 });
             doc.save("Laporan_PIBG.pdf");
         };
         
-        window.exportClothingCsv = () => {
-             const data = [["Nama Murid", "Jenis Baju", "Tag Nama"]];
-             // Filter for clothing items (keyword match)
-             const clothingKeywords = ['BAJU', 'TSHIRT', 'T-SHIRT', 'VEST', 'SELUAR', 'KAIN', 'SUKAN', 'UNIFORM'];
-             
-             window.orders.forEach(o => {
-                 if(o.items) {
-                     Object.entries(o.items).forEach(([itemId, qty]) => {
-                         const item = [...window.itemsA, ...window.itemsB].find(i => i.id === itemId);
-                         if(item) {
-                             const itemNameUpper = item.name.toUpperCase();
-                             if(clothingKeywords.some(kw => itemNameUpper.includes(kw))) {
-                                 // Add row per item quantity or just per item type? 
-                                 // Usually separate row per item type (showing Qty if > 1)
-                                 const itemDisplay = qty > 1 ? `${item.name} (x${qty})` : item.name;
-                                 data.push([`"${o.name}"`, `"${itemDisplay}"`, `"${o.tagName || '-'}"`]);
-                             }
-                         }
-                     });
-                 }
-             });
-             window.generateCSV(data, "Senarai_Tempahan_Baju.csv");
-        };
-
-        window.exportClothingPdf = () => {
-            const { jsPDF } = window.jspdf;
-            const doc = new jsPDF();
-            doc.text("Senarai Tempahan Baju & Uniform", 14, 20);
-            
-            const body = [];
-            const clothingKeywords = ['BAJU', 'TSHIRT', 'T-SHIRT', 'VEST', 'SELUAR', 'KAIN', 'SUKAN', 'UNIFORM'];
-            
-            window.orders.forEach(o => {
-                 if(o.items) {
-                     Object.entries(o.items).forEach(([itemId, qty]) => {
-                         const item = [...window.itemsA, ...window.itemsB].find(i => i.id === itemId);
-                         if(item) {
-                             const itemNameUpper = item.name.toUpperCase();
-                             if(clothingKeywords.some(kw => itemNameUpper.includes(kw))) {
-                                 const itemDisplay = qty > 1 ? `${item.name} (x${qty})` : item.name;
-                                 body.push([o.name, itemDisplay, o.tagName || '-']);
-                             }
-                         }
-                     });
-                 }
-            });
-            
-            doc.autoTable({ head: [['Nama Murid', 'Jenis Baju/Item', 'Tag Nama']], body: body, startY: 30 });
-            doc.save("Senarai_Tempahan_Baju.pdf");
-        };
-
         window.exportNametagCsv = () => {
              const data = [["Nama Murid", "Tag Nama"]];
-             // Logic: Check if user ordered ANY nametag item OR just list all users with a tagName?
-             // Safest is to check if they bought an item marked 'isNametag'
-             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+             const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
              window.orders.forEach(o => {
                  if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
                      data.push([`"${o.name}"`, `"${o.tagName||'-'}"`]);
@@ -448,7 +522,7 @@
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
             doc.text("Senarai Tempahan Nametag", 14, 20);
-            const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+            const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
             const body = window.orders
                 .filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)))
                 .map(o => [o.name, o.tagName || '-']);
@@ -477,7 +551,6 @@
             if(tab === 'orders') window.renderAdminOrders();
             if(tab === 'inventory') window.renderAdminInventory();
             if(tab === 'pibg') window.renderAdminPibg();
-            if(tab === 'clothing') window.renderAdminClothing();
             if(tab === 'nametag') window.renderAdminNametags();
             if(tab === 'log') window.renderAdminLogs();
         };
@@ -526,7 +599,7 @@
                     <td class="p-3 uppercase font-medium">${i.name}</td>
                     <td class="p-3 text-center text-xs font-bold">${i.category==='A'?'WAJIB':'PILIHAN'}</td>
                     <td class="p-3 text-center">RM ${i.price.toFixed(2)}</td>
-                    <td class="p-3 text-center"><button onclick="window.deleteInventoryItem('${i.id}')" class="text-red-500 hover:bg-red-50 p-2 rounded"><i class="fas fa-trash"></i></button></td>
+                    <td class="p-3 text-center"><button onclick="window.deleteInventoryItem('${i.id}', this)" class="text-red-500 hover:bg-red-50 p-2 rounded"><i class="fas fa-trash"></i></button></td>
                 </tr>
             `).join('');
         };
@@ -534,62 +607,28 @@
         window.renderAdminPibg = () => {
              const tb = document.getElementById('adm-pibg-body');
              if(!tb) return;
-             const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
-             const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => pibgItems.includes(k)));
-             tb.innerHTML = list.length ? list.map(o => `
+             
+             // Get orders containing PIBG
+             const list = window.orders.filter(o => window.calculateSpecificItemCost(o, 'PIBG') > 0);
+
+             tb.innerHTML = list.length ? list.map(o => {
+                const pibgFee = window.calculateSpecificItemCost(o, 'PIBG');
+                return `
                 <tr class="border-b hover:bg-yellow-50 text-sm">
                     <td class="p-3 uppercase font-bold">${o.name}</td>
                     <td class="p-3 uppercase text-xs">${o.parent}</td>
-                    <td class="p-3 text-center text-green-600 font-bold text-xs"><i class="fas fa-check"></i> YA</td>
-                    <td class="p-3 text-center font-mono text-xs">RM ${(o.paid||0).toFixed(2)}</td>
+                    <td class="p-3 text-center font-mono text-xs font-bold text-slate-700">RM ${pibgFee.toFixed(2)}</td>
+                    <td class="p-3 text-center text-xs font-bold ${o.paid >= o.total ? 'text-green-600' : 'text-red-500'}">
+                        ${o.paid >= o.total ? '<i class="fas fa-check"></i> LUNAS' : 'BELUM'}
+                    </td>
                 </tr>
-             `).join('') : '<tr><td colspan="4" class="p-6 text-center text-slate-400">Tiada rekod PIBG.</td></tr>';
+             `}).join('') : '<tr><td colspan="4" class="p-6 text-center text-slate-400">Tiada rekod PIBG.</td></tr>';
         };
 
-        // NEW: Clothing Report Logic
-        window.renderAdminClothing = () => {
-             const tb = document.getElementById('adm-clothing-body');
-             if(!tb) return;
-             
-             // Keywords to identify clothing items
-             const clothingKeywords = ['BAJU', 'TSHIRT', 'T-SHIRT', 'VEST', 'SELUAR', 'KAIN', 'SUKAN', 'UNIFORM'];
-             const rows = [];
-
-             window.orders.forEach(o => {
-                 if(o.items) {
-                     Object.entries(o.items).forEach(([itemId, qty]) => {
-                         // Find item details
-                         const item = [...window.itemsA, ...window.itemsB].find(i => i.id === itemId);
-                         if(item) {
-                             const itemNameUpper = item.name.toUpperCase();
-                             // Check if item is clothing
-                             if(clothingKeywords.some(kw => itemNameUpper.includes(kw))) {
-                                 rows.push({
-                                     student: o.name,
-                                     item: item.name,
-                                     qty: qty,
-                                     tagName: o.tagName || '-'
-                                 });
-                             }
-                         }
-                     });
-                 }
-             });
-
-             tb.innerHTML = rows.length ? rows.map(r => `
-                <tr class="border-b hover:bg-blue-50 text-sm">
-                    <td class="p-3 uppercase font-bold">${r.student}</td>
-                    <td class="p-3 uppercase">${r.item} <span class="text-xs font-bold text-slate-400">x${r.qty}</span></td>
-                    <td class="p-3 uppercase font-mono text-xs font-bold text-blue-700">${r.tagName}</td>
-                </tr>
-             `).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan baju ditemui.</td></tr>';
-        };
-
-        // MODIFIED: Nametag Report Logic (Simplified Columns)
         window.renderAdminNametags = () => {
              const tb = document.getElementById('adm-tag-body');
              if(!tb) return;
-             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+             const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
              const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)));
              tb.innerHTML = list.length ? list.map(o => `
                 <tr class="border-b hover:bg-purple-50 text-sm">
@@ -613,10 +652,22 @@
              const cbs = document.querySelectorAll('.order-checkbox:checked');
              if(!cbs.length) return alert("Pilih tempahan dahulu.");
              if(confirm(`Padam ${cbs.length} tempahan?`)) {
-                 const batch = writeBatch(db);
-                 cbs.forEach(cb => batch.delete(doc(db, 'book_orders', cb.dataset.id)));
-                 await batch.commit();
-                 document.getElementById('orderSelectAll').checked = false;
+                 const btn = document.querySelector('button[onclick="window.deleteSelectedOrders()"]');
+                 const oldText = btn.innerHTML;
+                 btn.innerHTML = '<span class="loader w-3 h-3"></span>';
+                 btn.disabled = true;
+                 
+                 try {
+                     const batch = writeBatch(db);
+                     cbs.forEach(cb => batch.delete(doc(db, 'book_orders', cb.dataset.id)));
+                     await batch.commit();
+                     document.getElementById('orderSelectAll').checked = false;
+                 } catch(e) {
+                     alert("Gagal: " + e.message);
+                 } finally {
+                     btn.innerHTML = oldText;
+                     btn.disabled = false;
+                 }
              }
         };
 
@@ -624,16 +675,38 @@
              const cbs = document.querySelectorAll('.inv-checkbox:checked');
              if(!cbs.length) return alert("Pilih item dahulu.");
              if(confirm(`Padam ${cbs.length} item?`)) {
-                 const batch = writeBatch(db);
-                 cbs.forEach(cb => batch.delete(doc(db, 'book_items', cb.dataset.id)));
-                 await batch.commit();
-                 document.getElementById('invSelectAll').checked = false;
+                 const btn = document.querySelector('button[onclick="window.deleteSelectedItems()"]');
+                 const oldText = btn.innerHTML;
+                 btn.innerHTML = '<span class="loader w-3 h-3"></span>';
+                 btn.disabled = true;
+
+                 try {
+                     const batch = writeBatch(db);
+                     cbs.forEach(cb => batch.delete(doc(db, 'book_items', cb.dataset.id)));
+                     await batch.commit();
+                     document.getElementById('invSelectAll').checked = false;
+                 } catch(e) {
+                     alert("Gagal: " + e.message);
+                 } finally {
+                     btn.innerHTML = oldText;
+                     btn.disabled = false;
+                 }
              }
         };
 
-        window.deleteInventoryItem = (id) => {
-            if(confirm("Adakah anda pasti ingin memadam item ini dari inventori?\nTindakan ini tidak boleh dikembalikan.")) {
-                deleteDoc(doc(db, 'book_items', id)).catch(e => alert("Ralat: " + e.message));
+        window.deleteInventoryItem = async (id, btn) => {
+            if(confirm("Padam item ini?")) {
+                const oldContent = btn.innerHTML;
+                btn.innerHTML = '<span class="loader w-4 h-4 border-red-500 border-t-transparent"></span>';
+                btn.disabled = true;
+                
+                try {
+                    await deleteDoc(doc(db, 'book_items', id));
+                } catch(e) { 
+                    alert("Ralat: " + e.message); 
+                    btn.innerHTML = oldContent;
+                    btn.disabled = false;
+                }
             }
         };
 
@@ -731,20 +804,35 @@
             }
         };
 
+        // --- UPDATE ADD ITEM MODAL: REMOVE CHECKBOX ---
         window.openAddItemModal = () => document.getElementById('addItemModal').classList.remove('hidden');
         window.closeAddItemModal = () => document.getElementById('addItemModal').classList.add('hidden');
         window.saveNewItem = async () => {
              const name = document.getElementById('newItemName').value;
              const price = parseFloat(document.getElementById('newItemPrice').value);
              const category = document.getElementById('newItemCategory').value;
-             const isNametag = document.getElementById('newItemNametag').checked;
+             // No more Checkbox logic needed here
+             
              if(!name || isNaN(price)) return alert("Isi semua data.");
              
+             const btn = document.getElementById('btnSaveItem');
+             const oldText = btn.innerText;
+             btn.innerText = "SIMPAN...";
+             btn.disabled = true;
+
              // Guna itemsColl yang sudah ditetapkan ke root 'book_items'
-             await addDoc(itemsColl, { name, price, category, isNametag, order: Date.now() });
-             window.closeAddItemModal();
-             document.getElementById('newItemName').value = '';
-             document.getElementById('newItemPrice').value = '';
+             // Removed 'isNametag' property, relying on name string matching instead
+             try {
+                await addDoc(itemsColl, { name, price, category, order: Date.now() });
+                window.closeAddItemModal();
+                document.getElementById('newItemName').value = '';
+                document.getElementById('newItemPrice').value = '';
+             } catch(e) {
+                alert("Gagal simpan: " + e.message);
+             } finally {
+                btn.innerText = oldText;
+                btn.disabled = false;
+             }
         };
 
         window.openPaymentModal = (id, cur, tot) => {
@@ -935,12 +1023,6 @@
                     <span class="hidden md:inline ml-3 text-sm font-medium">Yuran PIBG</span>
                 </button>
 
-                <!-- NEW: Clothing Report -->
-                <button onclick="window.setAdminTab('clothing')" id="nav-clothing" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
-                    <i class="fas fa-tshirt text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Tempahan Baju</span>
-                </button>
-
                 <!-- Nametag -->
                 <button onclick="window.setAdminTab('nametag')" id="nav-nametag" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
                     <i class="fas fa-id-badge text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
@@ -984,32 +1066,9 @@
             </div>
             <div id="adm-pibg" class="hidden admin-tab animate-fadeUp">
                 <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Yuran PIBG</h2><div class="flex gap-2"><button onclick="window.exportPibgCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportPibgPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-yellow-100 text-yellow-900 border-b border-yellow-200 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Nama Penjaga</th><th class="p-4 text-center">Bayaran (RM)</th><th class="p-4 text-center">Status Bayaran</th></tr></thead><tbody id="adm-pibg-body" class="divide-y divide-slate-100"></tbody></table></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-yellow-100 text-yellow-900 border-b border-yellow-200 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Nama Penjaga</th><th class="p-4 text-center">Yuran PIBG (RM)</th><th class="p-4 text-center">Status Bayaran</th></tr></thead><tbody id="adm-pibg-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
             
-            <!-- NEW: Clothing Report Tab -->
-            <div id="adm-clothing" class="hidden admin-tab animate-fadeUp">
-                <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-bold text-slate-800">Senarai Tempahan Baju</h2>
-                     <div class="flex gap-2">
-                        <button onclick="window.exportClothingCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button>
-                        <button onclick="window.exportClothingPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button>
-                    </div>
-                </div>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                    <table class="w-full text-sm text-left">
-                        <thead class="bg-blue-50 text-blue-900 border-b border-blue-100 font-bold text-xs uppercase">
-                            <tr>
-                                <th class="p-4">Nama Murid</th>
-                                <th class="p-4">Jenis Baju / Item</th>
-                                <th class="p-4">Tag Nama (Rujukan)</th>
-                            </tr>
-                        </thead>
-                        <tbody id="adm-clothing-body" class="divide-y divide-slate-100"></tbody>
-                    </table>
-                </div>
-            </div>
-
             <div id="adm-nametag" class="hidden admin-tab animate-fadeUp">
                 <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Tempahan Nametag</h2><div class="flex gap-2"><button onclick="window.exportNametagCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
                 <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
@@ -1050,7 +1109,7 @@
                     <input type="number" step="0.01" id="newItemPrice" class="w-full border p-3 rounded-lg outline-none text-sm" placeholder="HARGA RM">
                     <select id="newItemCategory" class="w-full border p-3 rounded-lg outline-none text-sm"><option value="B">Pilihan (B)</option><option value="A">Wajib (A)</option></select>
                 </div>
-                <label class="flex items-center text-xs font-bold cursor-pointer"><input type="checkbox" id="newItemNametag" class="mr-2"> Perlu Nametag?</label>
+                <!-- Checkbox "Perlu Nametag" removed as requested -->
             </div>
             <div class="flex gap-2"><button onclick="window.closeAddItemModal()" class="flex-1 border py-3 rounded-xl font-bold text-xs">BATAL</button><button id="btnSaveItem" onclick="window.saveNewItem()" class="flex-1 bg-brand-600 text-white py-3 rounded-xl font-bold text-xs">SIMPAN</button></div>
         </div>
