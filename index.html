@@ -270,10 +270,12 @@
             if (!totalAEl) return;
             let total = parseFloat(totalAEl.innerText) || 0;
             window.cartState = {};
+            
             document.querySelectorAll('.qty-input').forEach(inp => {
                 const qty = parseInt(inp.value) || 0;
                 const price = parseFloat(inp.dataset.price);
                 const id = inp.dataset.id;
+                
                 if (qty > 0) {
                     window.cartState[id] = qty;
                     total += (qty * price);
@@ -281,9 +283,11 @@
                 } else {
                     document.getElementById(`tagInput-${id}`)?.classList.add('hidden');
                 }
+                
                 const subEl = document.getElementById(`sub-${id}`);
                 if(subEl) subEl.innerText = (qty * price).toFixed(2);
             });
+            
             const totalStr = `RM ${total.toFixed(2)}`;
             if(document.getElementById('grandTotalDisplay')) document.getElementById('grandTotalDisplay').innerText = totalStr;
             if(document.getElementById('mobileGrandTotal')) document.getElementById('mobileGrandTotal').innerText = totalStr;
@@ -306,28 +310,25 @@
             const tB = document.getElementById('tbody-b');
             const totalAEl = document.getElementById('totalA');
             
-            // Render Items A
+            // Render Items A (WAJIB - FIXED 1 UNIT)
             if(window.itemsA.length) {
                 tA.innerHTML = window.itemsA.map((i, idx) => {
-                    const currentQty = window.cartState[i.id] || 0; 
-                    // Note: Category A items sometimes forced to 1, but let's respect cartState if editing
+                    // Force quantity to 1 for display and calculation, unless specifically 0 for some reason, but Wajib implies 1.
+                    // We hide the input but keep it for calcAll() to pick up.
                     return `
                     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
                         <td class="p-4"><span class="text-xs font-bold text-slate-400 mr-2">${idx + 1}.</span><span class="font-medium text-slate-700 uppercase">${i.name}</span></td>
                         <td class="p-4 text-center text-sm text-slate-500">RM ${i.price.toFixed(2)}</td>
                         <td class="p-4 text-center">
-                             <div class="inline-flex border rounded bg-white">
-                                <button onclick="this.nextElementSibling.stepDown();this.nextElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">-</button>
-                                <input type="number" min="0" value="${currentQty}" data-id="${i.id}" data-price="${i.price}" class="qty-input w-10 text-center border-x py-1 text-sm outline-none" onchange="window.calcAll()" oninput="window.calcAll()">
-                                <button onclick="this.previousElementSibling.stepUp();this.previousElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">+</button>
-                            </div>
+                             <input type="hidden" value="1" data-id="${i.id}" data-price="${i.price}" class="qty-input" onchange="window.calcAll()">
+                             <span class="bg-gray-100 text-gray-700 px-3 py-1 rounded-full text-xs font-bold border border-gray-200 cursor-not-allowed">1 Unit (Wajib)</span>
                         </td>
-                        <td class="p-4 text-right font-bold text-slate-700" id="sub-${i.id}">0.00</td>
+                        <td class="p-4 text-right font-bold text-slate-700" id="sub-${i.id}">RM ${i.price.toFixed(2)}</td>
                     </tr>`
                 }).join('');
             } else tA.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item wajib.</td></tr>';
             
-            // Render Items B
+            // Render Items B (PILIHAN - EDITABLE)
             if(window.itemsB.length) {
                 tB.innerHTML = window.itemsB.map(i => {
                     const isTag = window.isNametagItem(i.name);
@@ -360,7 +361,8 @@
                 }).join('');
             } else tB.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item pilihan.</td></tr>';
             
-            window.calcAll();
+            // Recalculate immediately after rendering (crucial for Item A to show total)
+            setTimeout(window.calcAll, 100);
         };
 
         window.renderSummary = () => {
@@ -428,10 +430,9 @@
                 }
             }
             
-            // Jika ada editingOrderId, kita update, jika tidak kita create baru
             let orderData = { 
                 name, parent, phone, total, items, tagName,
-                timestamp: Date.now() // Update timestamp for sort
+                timestamp: Date.now()
             };
 
             try {
@@ -439,12 +440,11 @@
                 if (window.editingOrderId) {
                     // Update Existing Order
                     ref = doc(db, 'book_orders', window.editingOrderId);
-                    // Maintain existing created date/payment info, just update content
                     await updateDoc(ref, orderData);
-                    // Fetch fresh data for receipt
                     const snap = await getDoc(ref);
                     orderData = { id: snap.id, ...snap.data() };
                     alert("Tempahan berjaya dikemaskini.");
+                    await window.sendTelegramNotification(orderData); // NOTIFIKASI UNTUK UPDATE
                 } else {
                     // Create New Order
                     orderData.date = new Date().toLocaleDateString('ms-MY');
@@ -453,13 +453,12 @@
                     orderData.paymentLogs = [];
                     ref = await addDoc(ordersColl, orderData);
                     orderData.id = ref.id;
-                    // Trigger Telegram Notification only for new orders or major updates? Let's do both.
-                    await window.sendTelegramNotification(orderData);
+                    await window.sendTelegramNotification(orderData); // NOTIFIKASI UNTUK NEW
                 }
                 
                 window.currentReceipt = orderData;
                 window.renderReceiptView(window.currentReceipt);
-                window.editingOrderId = null; // Reset edit mode
+                window.editingOrderId = null; 
             } catch(e) { 
                 console.error(e);
                 alert("Gagal menghantar tempahan! Sila semak internet."); 
@@ -471,32 +470,24 @@
 
         // --- EDIT ORDER LOGIC ---
         window.editOrder = (data) => {
-            // Check if allowed (Not Paid)
             if ((data.paid || 0) > 0 || data.tagStatus === true) {
                 alert("Maaf, tempahan ini telah disahkan oleh Admin dan tidak boleh diubah lagi. Sila hubungi pihak sekolah.");
                 return;
             }
 
             if(confirm("Adakah anda ingin mengemaskini tempahan ini?")) {
-                // Set Global Edit ID
                 window.editingOrderId = data.id;
-                
-                // Hide other views
                 document.getElementById('check-view').classList.add('hidden');
                 document.getElementById('user-view').classList.remove('hidden');
                 
-                // Populate Form Fields
                 document.getElementById('studentName').value = data.name;
                 document.getElementById('parentName').value = data.parent;
                 document.getElementById('parentPhone').value = data.phone;
                 
-                // Restore Cart State
                 window.cartState = data.items || {};
                 
-                // Render Form to show inputs
                 window.renderUserForm();
                 
-                // Restore Tag Name if any (need timeout to wait for renderUserForm to create inputs)
                 setTimeout(() => {
                     const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name));
                     for(let t of tagItems) {
@@ -508,7 +499,7 @@
                             }
                         }
                     }
-                    window.calcAll(); // Recalculate totals
+                    window.calcAll(); 
                 }, 100);
 
                 window.safeNavigate('section-info');
@@ -532,13 +523,9 @@
                     const d = doc.data();
                     const baki = d.total - (d.paid || 0);
                     const statusClass = baki <= 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-                    const statusText = baki <= 0 ? 'SELESAI' : 'TERTUNGGAK';
-                    // Check if editable: No payment made yet
                     const isEditable = (d.paid || 0) === 0;
 
-                    // Serialize data for passing to functions
                     const dataObj = {id: doc.id, ...d};
-                    // Escape quotes for HTML attribute
                     const dataStr = JSON.stringify(dataObj).replace(/"/g, '&quot;');
                     
                     html += `
