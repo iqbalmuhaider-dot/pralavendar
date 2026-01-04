@@ -449,6 +449,8 @@
                     orderData.paid = 0;
                     orderData.tagStatus = false;
                     orderData.paymentLogs = [];
+                    // Add default Verified flag as false
+                    orderData.adminVerified = false;
                     ref = await addDoc(ordersColl, orderData);
                     orderData.id = ref.id;
                     await window.sendTelegramNotification(orderData); // NOTIFIKASI UNTUK NEW
@@ -465,10 +467,21 @@
                 btn.disabled = false;
             }
         };
+        
+        // --- ADMIN VERIFY ORDER ---
+        window.verifyOrder = async (id) => {
+             if(confirm("Adakah anda pasti ingin mengesahkan tempahan ini?\nIbu bapa tidak akan dapat mengemaskini tempahan selepas ini.")) {
+                 try {
+                     await updateDoc(doc(db, 'book_orders', id), { adminVerified: true });
+                     // UI updates automatically via onSnapshot
+                 } catch(e) { alert("Ralat: " + e.message); }
+             }
+        };
 
         // --- EDIT ORDER LOGIC ---
         window.editOrder = (data) => {
-            if ((data.paid || 0) > 0 || data.tagStatus === true) {
+            // Check if allowed (Not Paid AND Not Verified)
+            if ((data.paid || 0) > 0 || data.tagStatus === true || data.adminVerified === true) {
                 alert("Maaf, tempahan ini telah disahkan oleh Admin dan tidak boleh diubah lagi. Sila hubungi pihak sekolah.");
                 return;
             }
@@ -521,7 +534,7 @@
                     const d = doc.data();
                     const baki = d.total - (d.paid || 0);
                     const statusClass = baki <= 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-                    const isEditable = (d.paid || 0) === 0;
+                    const isEditable = (d.paid || 0) === 0 && d.adminVerified !== true; // Logic baru edit
 
                     const dataObj = {id: doc.id, ...d};
                     const dataStr = JSON.stringify(dataObj).replace(/"/g, '&quot;');
@@ -532,6 +545,7 @@
                             <div>
                                 <h4 class="font-bold text-slate-800 uppercase">${d.name}</h4>
                                 <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${baki <= 0 ? 'SELESAI' : 'TERTUNGGAK'}</span>
+                                ${d.adminVerified ? '<span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-1 rounded font-bold ml-1"><i class="fas fa-check-circle"></i> SAH</span>' : ''}
                             </div>
                             <p class="text-xs text-slate-500 mb-3 text-right">RM ${d.total.toFixed(2)}</p>
                         </div>
@@ -697,15 +711,28 @@
         window.renderAdminOrders = () => {
             const tb = document.getElementById('adm-orders-body');
             if(!tb) return;
-            tb.innerHTML = window.orders.sort((a,b)=> b.timestamp - a.timestamp).map(o => `
+            tb.innerHTML = window.orders.sort((a,b)=> b.timestamp - a.timestamp).map(o => {
+                const baki = o.total - (o.paid || 0);
+                const isPaid = baki <= 0;
+                // Check verification
+                const isVerified = o.adminVerified === true;
+                
+                return `
                 <tr class="border-b hover:bg-slate-50 text-sm">
                     <td class="p-3"><input type="checkbox" class="order-checkbox rounded border-slate-300" data-id="${o.id}"></td>
                     <td class="p-3"><div class="font-bold uppercase">${o.name}</div><div class="text-xs text-slate-500">${o.phone}</div></td>
                     <td class="p-3 text-center font-bold">RM ${o.total.toFixed(2)}</td>
                     <td class="p-3 text-center"><div class="text-xs font-bold ${o.paid>=o.total?'text-green-600':'text-red-600'}">${o.paid>=o.total?'LUNAS':'TUNGGAK'}</div><div class="text-xs text-slate-400">Bayar: RM ${(o.paid||0).toFixed(2)}</div></td>
-                    <td class="p-3 text-center"><button onclick="window.openPaymentModal('${o.id}', ${o.paid||0}, ${o.total})" class="text-brand-600 hover:bg-brand-50 p-1 rounded"><i class="fas fa-edit"></i></button><button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1"><i class="fas fa-eye"></i></button></td>
+                    <td class="p-3 text-center">
+                        <button onclick="window.openPaymentModal('${o.id}', ${o.paid||0}, ${o.total})" class="text-brand-600 hover:bg-brand-50 p-1 rounded" title="Kemaskini Bayaran"><i class="fas fa-edit"></i></button>
+                        <button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1" title="Lihat Resit"><i class="fas fa-eye"></i></button>
+                        ${!isVerified ? 
+                            `<button onclick="window.verifyOrder('${o.id}')" class="text-green-600 hover:bg-green-50 p-1 rounded ml-1" title="Sahkan Tempahan"><i class="fas fa-check-circle"></i></button>` : 
+                            `<span class="text-green-500 ml-1 cursor-help" title="Telah Disahkan"><i class="fas fa-lock"></i></span>`
+                        }
+                    </td>
                 </tr>
-            `).join('');
+            `}).join('');
         };
 
         window.renderAdminInventory = () => {
