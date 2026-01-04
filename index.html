@@ -38,12 +38,14 @@
         }
         .loader { border: 2px solid #f3f3f3; border-top: 2px solid #6d28d9; border-radius: 50%; width: 16px; height: 16px; animation: spin 1s linear infinite; display: inline-block; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        /* Disabled button style */
+        .btn-disabled { opacity: 0.6; cursor: not-allowed; background-color: #94a3b8 !important; pointer-events: none; }
     </style>
 
     <!-- Firebase SDKs -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, deleteDoc, onSnapshot, query, doc, updateDoc, where, getDocs, writeBatch, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- KONFIGURASI FIREBASE ---
@@ -60,9 +62,8 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const googleProvider = new GoogleAuthProvider();
 
-        // --- MENGGUNAKAN ROOT COLLECTIONS (KEMBALI KE ASAL) ---
+        // --- MENGGUNAKAN ROOT COLLECTIONS ---
         const itemsColl = collection(db, 'book_items');
         const ordersColl = collection(db, 'book_orders');
         const configDocRef = doc(db, 'book_config', 'general');
@@ -78,7 +79,9 @@
         window.chartP = null;
         window.selectedOrderIdForPayment = null;
         window.isAdminUser = false;
-        window.appConfig = { telegramBotToken: '', telegramChatId: '' }; // Local Config State
+        window.editingOrderId = null; // New state for editing
+        window.appConfig = { telegramBotToken: '', telegramChatId: '' };
+        window.isSystemOpen = true; // Default open until fetch
 
         // --- HELPER UNTUK KIRA KOS ---
         window.calculateSpecificItemCost = (order, keywordStr, excludeStr = null) => {
@@ -108,7 +111,6 @@
         // --- TELEGRAM NOTIFICATION FUNCTION ---
         window.sendTelegramNotification = async (orderData) => {
             try {
-                // Fetch latest config to ensure we have the token
                 const snap = await getDoc(configDocRef);
                 let token = '';
                 let chatId = '';
@@ -120,7 +122,7 @@
                 }
 
                 if (token && chatId) {
-                    const msg = `<b>TEMPAHAN BARU 📝</b>\n\n` +
+                    const msg = `<b>TEMPAHAN ${window.editingOrderId ? 'DIKEMASKINI' : 'BARU'} 📝</b>\n\n` +
                                 `<b>Nama Murid:</b> ${orderData.name}\n` +
                                 `<b>Ibu Bapa:</b> ${orderData.parent}\n` +
                                 `<b>No. Tel:</b> ${orderData.phone}\n` +
@@ -144,8 +146,47 @@
                 }
             } catch (e) {
                 console.error("Telegram API Error:", e);
-                // Fail silently so user experience isn't affected
             }
+        };
+
+        // --- SYSTEM STATUS LOGIC ---
+        window.updateSystemUI = () => {
+            // Update Admin Button
+            const btn = document.getElementById('btnToggleSystem');
+            if(btn) {
+                if(window.isSystemOpen) {
+                    btn.innerText = "DIBUKA (ON)";
+                    btn.className = "px-6 py-2 rounded-lg font-bold text-xs text-white transition shadow-lg bg-green-500 hover:bg-green-600";
+                } else {
+                    btn.innerText = "DITUTUP (OFF)";
+                    btn.className = "px-6 py-2 rounded-lg font-bold text-xs text-white transition shadow-lg bg-red-500 hover:bg-red-600";
+                }
+            }
+            
+            // Update Landing Page Button
+            const landingBtn = document.getElementById('landingStartBtn');
+            const landingMsg = document.getElementById('landingStatusMsg');
+            if(landingBtn) {
+                if(window.isSystemOpen) {
+                     landingBtn.innerHTML = 'MULA SEKARANG <i class="fas fa-arrow-right ml-2"></i>';
+                     landingBtn.classList.remove('btn-disabled');
+                     landingBtn.onclick = window.startOrder;
+                     if(landingMsg) landingMsg.classList.add('hidden');
+                } else {
+                     landingBtn.innerHTML = 'TEMPAHAN DITUTUP <i class="fas fa-lock ml-2"></i>';
+                     landingBtn.classList.add('btn-disabled');
+                     landingBtn.onclick = null;
+                     if(landingMsg) landingMsg.classList.remove('hidden');
+                }
+            }
+        };
+
+        window.toggleSystemStatus = async () => {
+            const newState = !window.isSystemOpen;
+            try {
+                await setDoc(configDocRef, { isSystemOpen: newState }, { merge: true });
+                // UI updates via onSnapshot listener
+            } catch(e) { alert("Gagal kemaskini status: " + e.message); }
         };
 
         // --- NAVIGATION ---
@@ -154,13 +195,29 @@
             document.getElementById('landing-view').classList.remove('hidden');
             document.getElementById('mainNavbar').classList.remove('hidden');
             document.getElementById('mobileActionBar').classList.add('hidden');
+            
+            // Reset states
+            window.editingOrderId = null;
+            window.cartState = {};
+            document.getElementById('studentName').value = '';
+            document.getElementById('parentName').value = '';
+            document.getElementById('parentPhone').value = '';
+            window.updateSystemUI(); // Ensure UI is correct on home load
         };
 
         window.startOrder = () => {
+            if(!window.isSystemOpen) {
+                alert("Maaf, sistem tempahan telah ditutup oleh pihak pentadbiran.");
+                return;
+            }
             document.getElementById('landing-view').classList.add('hidden');
             document.getElementById('user-view').classList.remove('hidden');
             window.safeNavigate('section-info');
             document.getElementById('mobileActionBar').classList.remove('hidden');
+            // Ensure form is fresh if not editing
+            if(!window.editingOrderId) {
+                window.renderUserForm(); // Reset inputs
+            }
         };
 
         window.startCheck = () => {
@@ -249,26 +306,38 @@
             const tB = document.getElementById('tbody-b');
             const totalAEl = document.getElementById('totalA');
             
+            // Render Items A
             if(window.itemsA.length) {
-                tA.innerHTML = window.itemsA.map((i, idx) => `
+                tA.innerHTML = window.itemsA.map((i, idx) => {
+                    const currentQty = window.cartState[i.id] || 0; 
+                    // Note: Category A items sometimes forced to 1, but let's respect cartState if editing
+                    return `
                     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
                         <td class="p-4"><span class="text-xs font-bold text-slate-400 mr-2">${idx + 1}.</span><span class="font-medium text-slate-700 uppercase">${i.name}</span></td>
                         <td class="p-4 text-center text-sm text-slate-500">RM ${i.price.toFixed(2)}</td>
-                        <td class="p-4 text-center"><span class="bg-brand-50 text-brand-700 px-2 py-1 rounded text-xs font-bold">1 Unit</span></td>
-                        <td class="p-4 text-right font-bold text-slate-700">RM ${i.price.toFixed(2)}</td>
-                    </tr>`).join('');
-                if(totalAEl) totalAEl.innerText = window.itemsA.reduce((a,b)=>a+b.price,0).toFixed(2);
+                        <td class="p-4 text-center">
+                             <div class="inline-flex border rounded bg-white">
+                                <button onclick="this.nextElementSibling.stepDown();this.nextElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">-</button>
+                                <input type="number" min="0" value="${currentQty}" data-id="${i.id}" data-price="${i.price}" class="qty-input w-10 text-center border-x py-1 text-sm outline-none" onchange="window.calcAll()" oninput="window.calcAll()">
+                                <button onclick="this.previousElementSibling.stepUp();this.previousElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">+</button>
+                            </div>
+                        </td>
+                        <td class="p-4 text-right font-bold text-slate-700" id="sub-${i.id}">0.00</td>
+                    </tr>`
+                }).join('');
             } else tA.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item wajib.</td></tr>';
             
+            // Render Items B
             if(window.itemsB.length) {
                 tB.innerHTML = window.itemsB.map(i => {
                     const isTag = window.isNametagItem(i.name);
+                    const currentQty = window.cartState[i.id] || 0;
                     return `
                     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
                         <td class="p-4">
                             <div class="font-medium text-slate-700 uppercase">${i.name}</div>
                             ${isTag ? `
-                                <div id="tagInput-${i.id}" class="hidden mt-3 bg-blue-50 p-3 rounded-lg border border-blue-100 animate-fadeUp">
+                                <div id="tagInput-${i.id}" class="${currentQty > 0 ? '' : 'hidden'} mt-3 bg-blue-50 p-3 rounded-lg border border-blue-100 animate-fadeUp">
                                     <label class="text-[10px] font-bold text-blue-600 uppercase mb-1 block">Nama Pada Tag (Wajib)</label>
                                     <input type="text" id="tagNameInput-${i.id}" maxlength="12" oninput="window.updateCharCount(this)" class="w-full border border-blue-200 p-2 text-sm rounded uppercase font-bold text-slate-700 focus:outline-none focus:border-blue-500" placeholder="ALI BIN ABU">
                                     <div class="flex justify-between mt-1">
@@ -282,7 +351,7 @@
                         <td class="p-4 text-center">
                             <div class="inline-flex border rounded bg-white">
                                 <button onclick="this.nextElementSibling.stepDown();this.nextElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">-</button>
-                                <input type="number" min="0" value="0" data-id="${i.id}" data-price="${i.price}" class="qty-input w-10 text-center border-x py-1 text-sm outline-none" onchange="window.calcAll()" oninput="window.calcAll()">
+                                <input type="number" min="0" value="${currentQty}" data-id="${i.id}" data-price="${i.price}" class="qty-input w-10 text-center border-x py-1 text-sm outline-none" onchange="window.calcAll()" oninput="window.calcAll()">
                                 <button onclick="this.previousElementSibling.stepUp();this.previousElementSibling.onchange()" class="px-2 text-slate-400 hover:text-brand-600">+</button>
                             </div>
                         </td>
@@ -290,6 +359,7 @@
                     </tr>`;
                 }).join('');
             } else tB.innerHTML = '<tr><td colspan="4" class="p-6 text-center italic text-slate-400">Tiada item pilihan.</td></tr>';
+            
             window.calcAll();
         };
 
@@ -324,6 +394,11 @@
             btn.innerHTML = '<span class="loader mr-2"></span> PROSES...';
             btn.disabled = true;
 
+            if(!window.isSystemOpen) {
+                 alert("Maaf, tempahan telah ditutup.");
+                 btn.innerHTML = originalText; btn.disabled = false; return;
+            }
+
             if (!auth.currentUser) {
                 try { await signInAnonymously(auth); } 
                 catch (authError) { btn.innerHTML = originalText; btn.disabled = false; alert("Ralat Sistem: " + authError.message); return; }
@@ -353,26 +428,90 @@
                 }
             }
             
-            const orderData = { 
-                date: new Date().toLocaleDateString('ms-MY'), 
-                timestamp: Date.now(), 
-                name, parent, phone, total, 
-                paid: 0, items, tagName, tagStatus: false, paymentLogs: [] 
+            // Jika ada editingOrderId, kita update, jika tidak kita create baru
+            let orderData = { 
+                name, parent, phone, total, items, tagName,
+                timestamp: Date.now() // Update timestamp for sort
             };
 
             try {
-                const ref = await addDoc(ordersColl, orderData);
-                // Trigger Telegram
-                await window.sendTelegramNotification({ id: ref.id, ...orderData });
+                let ref;
+                if (window.editingOrderId) {
+                    // Update Existing Order
+                    ref = doc(db, 'book_orders', window.editingOrderId);
+                    // Maintain existing created date/payment info, just update content
+                    await updateDoc(ref, orderData);
+                    // Fetch fresh data for receipt
+                    const snap = await getDoc(ref);
+                    orderData = { id: snap.id, ...snap.data() };
+                    alert("Tempahan berjaya dikemaskini.");
+                } else {
+                    // Create New Order
+                    orderData.date = new Date().toLocaleDateString('ms-MY');
+                    orderData.paid = 0;
+                    orderData.tagStatus = false;
+                    orderData.paymentLogs = [];
+                    ref = await addDoc(ordersColl, orderData);
+                    orderData.id = ref.id;
+                    // Trigger Telegram Notification only for new orders or major updates? Let's do both.
+                    await window.sendTelegramNotification(orderData);
+                }
                 
-                window.currentReceipt = { id: ref.id, ...orderData };
+                window.currentReceipt = orderData;
                 window.renderReceiptView(window.currentReceipt);
+                window.editingOrderId = null; // Reset edit mode
             } catch(e) { 
                 console.error(e);
                 alert("Gagal menghantar tempahan! Sila semak internet."); 
             } finally {
                 btn.innerHTML = originalText;
                 btn.disabled = false;
+            }
+        };
+
+        // --- EDIT ORDER LOGIC ---
+        window.editOrder = (data) => {
+            // Check if allowed (Not Paid)
+            if ((data.paid || 0) > 0 || data.tagStatus === true) {
+                alert("Maaf, tempahan ini telah disahkan oleh Admin dan tidak boleh diubah lagi. Sila hubungi pihak sekolah.");
+                return;
+            }
+
+            if(confirm("Adakah anda ingin mengemaskini tempahan ini?")) {
+                // Set Global Edit ID
+                window.editingOrderId = data.id;
+                
+                // Hide other views
+                document.getElementById('check-view').classList.add('hidden');
+                document.getElementById('user-view').classList.remove('hidden');
+                
+                // Populate Form Fields
+                document.getElementById('studentName').value = data.name;
+                document.getElementById('parentName').value = data.parent;
+                document.getElementById('parentPhone').value = data.phone;
+                
+                // Restore Cart State
+                window.cartState = data.items || {};
+                
+                // Render Form to show inputs
+                window.renderUserForm();
+                
+                // Restore Tag Name if any (need timeout to wait for renderUserForm to create inputs)
+                setTimeout(() => {
+                    const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name));
+                    for(let t of tagItems) {
+                        if(window.cartState[t.id]) {
+                            const inputEl = document.getElementById(`tagNameInput-${t.id}`);
+                            if(inputEl && data.tagName) {
+                                inputEl.value = data.tagName;
+                                window.updateCharCount(inputEl);
+                            }
+                        }
+                    }
+                    window.calcAll(); // Recalculate totals
+                }, 100);
+
+                window.safeNavigate('section-info');
             }
         };
 
@@ -393,15 +532,28 @@
                     const d = doc.data();
                     const baki = d.total - (d.paid || 0);
                     const statusClass = baki <= 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-                    const dataStr = JSON.stringify({id: doc.id, ...d}).replace(/"/g, '&quot;');
+                    const statusText = baki <= 0 ? 'SELESAI' : 'TERTUNGGAK';
+                    // Check if editable: No payment made yet
+                    const isEditable = (d.paid || 0) === 0;
+
+                    // Serialize data for passing to functions
+                    const dataObj = {id: doc.id, ...d};
+                    // Escape quotes for HTML attribute
+                    const dataStr = JSON.stringify(dataObj).replace(/"/g, '&quot;');
+                    
                     html += `
                     <div class="bg-white p-4 rounded-xl border shadow-sm">
-                        <div class="flex justify-between mb-2">
-                            <h4 class="font-bold text-slate-800 uppercase">${d.name}</h4>
-                            <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${baki <= 0 ? 'SELESAI' : 'TERTUNGGAK'}</span>
+                        <div class="flex justify-between items-start mb-3">
+                            <div>
+                                <h4 class="font-bold text-slate-800 uppercase">${d.name}</h4>
+                                <span class="text-xs font-bold px-2 py-1 rounded ${statusClass}">${baki <= 0 ? 'SELESAI' : 'TERTUNGGAK'}</span>
+                            </div>
+                            <p class="text-xs text-slate-500 mb-3 text-right">RM ${d.total.toFixed(2)}</p>
                         </div>
-                        <p class="text-xs text-slate-500 mb-3">Jumlah: RM ${d.total.toFixed(2)} | Dibayar: RM ${(d.paid||0).toFixed(2)}</p>
-                        <button onclick='window.viewReceiptDirect(${dataStr})' class="w-full bg-brand-600 text-white text-xs font-bold py-2 rounded-lg">LIHAT INVOIS</button>
+                        <div class="flex gap-2">
+                            <button onclick='window.viewReceiptDirect(${dataStr})' class="flex-1 bg-brand-600 hover:bg-brand-700 text-white text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2"><i class="fas fa-file-invoice"></i> INVOIS</button>
+                            ${isEditable ? `<button onclick='window.editOrder(${dataStr})' class="flex-1 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2"><i class="fas fa-edit"></i> KEMASKINI</button>` : ''}
+                        </div>
                     </div>`;
                 });
                 resDiv.innerHTML = html + '</div>';
@@ -444,12 +596,72 @@
 
         window.closeReceipt = () => {
             document.getElementById('receiptView').classList.add('hidden');
-            if(window.isAdminUser) document.getElementById('admin-view').classList.remove('hidden');
-            else if(document.getElementById('checkResults').innerHTML !== '') { document.getElementById('check-view').classList.remove('hidden'); document.getElementById('mainNavbar').classList.remove('hidden'); }
-            else window.goHome();
+            if(window.isAdminUser) {
+                document.getElementById('admin-view').classList.remove('hidden');
+            } else if(document.getElementById('checkResults').innerHTML !== '') {
+                document.getElementById('check-view').classList.remove('hidden');
+                document.getElementById('mainNavbar').classList.remove('hidden');
+            } else {
+                window.goHome();
+            }
         };
 
         window.printReceipt = () => window.print();
+
+        // --- EXPORT FUNCTIONS ---
+        window.generateCSV = (data, filename) => {
+            const csvContent = "data:text/csv;charset=utf-8," + data.map(e => e.join(",")).join("\n");
+            const link = document.createElement("a");
+            link.setAttribute("href", encodeURI(csvContent));
+            link.setAttribute("download", filename);
+            document.body.appendChild(link); link.click(); document.body.removeChild(link);
+        };
+
+        window.exportPibgCsv = () => {
+            const data = [["Nama Murid", "Nama Penjaga", "Bayaran (RM)", "Status"]];
+            const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
+            window.orders.forEach(o => {
+                if(o.items && Object.keys(o.items).some(k => pibgItems.includes(k))) {
+                     data.push([`"${o.name}"`, `"${o.parent}"`, o.paid.toFixed(2), (o.paid>=o.total ? "SELESAI" : "BELUM")]);
+                }
+            });
+            window.generateCSV(data, "Laporan_PIBG.csv");
+        };
+
+        window.exportPibgPdf = () => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            doc.text("Laporan Yuran PIBG 2026", 14, 20);
+            const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
+            const body = window.orders
+                .filter(o => o.items && Object.keys(o.items).some(k => pibgItems.includes(k)))
+                .map(o => [o.name, o.parent, `RM ${o.paid.toFixed(2)}`, (o.paid >= o.total ? "SELESAI" : "BELUM")]);
+            doc.autoTable({ head: [['Nama Murid', 'Penjaga', 'Bayaran', 'Status']], body: body, startY: 30 });
+            doc.save("Laporan_PIBG.pdf");
+        };
+        
+        window.exportNametagCsv = () => {
+             const data = [["Nama Murid", "Teks Tag", "Status"]];
+             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+             window.orders.forEach(o => {
+                 if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
+                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, o.tagStatus ? "SIAP" : "PROSES"]);
+                 }
+             });
+             window.generateCSV(data, "Laporan_Nametag.csv");
+        };
+
+        window.exportNametagPdf = () => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            doc.text("Laporan Tempahan Nametag", 14, 20);
+            const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+            const body = window.orders
+                .filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)))
+                .map(o => [o.name, o.tagName || '-', o.tagStatus ? "SIAP" : "PROSES"]);
+            doc.autoTable({ head: [['Nama Murid', 'Teks Tag', 'Status']], body: body, startY: 30 });
+            doc.save("Laporan_Nametag.pdf");
+        };
 
         // --- ADMIN CORE ---
         window.switchView = (view) => {
@@ -483,6 +695,7 @@
              document.getElementById('d-revenue').innerText = `RM ${rev.toFixed(2)}`;
              document.getElementById('d-count').innerText = window.orders.length;
              document.getElementById('d-pending').innerText = `RM ${pend.toFixed(2)}`;
+             
              const ctx = document.getElementById('chartPayment');
              if(ctx) {
                  if(window.chartP) window.chartP.destroy();
@@ -505,7 +718,7 @@
                     <td class="p-3"><div class="font-bold uppercase">${o.name}</div><div class="text-xs text-slate-500">${o.phone}</div></td>
                     <td class="p-3 text-center font-bold">RM ${o.total.toFixed(2)}</td>
                     <td class="p-3 text-center"><div class="text-xs font-bold ${o.paid>=o.total?'text-green-600':'text-red-600'}">${o.paid>=o.total?'LUNAS':'TUNGGAK'}</div><div class="text-xs text-slate-400">Bayar: RM ${(o.paid||0).toFixed(2)}</div></td>
-                    <td class="p-3 text-center"><button onclick="window.openPaymentModal('${o.id}')" class="text-brand-600 hover:bg-brand-50 p-1 rounded"><i class="fas fa-edit"></i></button><button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1"><i class="fas fa-eye"></i></button></td>
+                    <td class="p-3 text-center"><button onclick="window.openPaymentModal('${o.id}', ${o.paid||0}, ${o.total})" class="text-brand-600 hover:bg-brand-50 p-1 rounded"><i class="fas fa-edit"></i></button><button onclick="window.viewReceiptFromAdmin('${o.id}')" class="text-blue-600 hover:bg-blue-50 p-1 rounded ml-1"><i class="fas fa-eye"></i></button></td>
                 </tr>
             `).join('');
         };
@@ -520,7 +733,7 @@
                     <td class="p-3 uppercase font-medium">${i.name}</td>
                     <td class="p-3 text-center text-xs font-bold">${i.category==='A'?'WAJIB':'PILIHAN'}</td>
                     <td class="p-3 text-center">RM ${i.price.toFixed(2)}</td>
-                    <td class="p-3 text-center"><button onclick="window.deleteInventoryItem('${i.id}', this)" class="text-red-500 hover:bg-red-50 p-2 rounded"><i class="fas fa-trash"></i></button></td>
+                    <td class="p-3 text-center"><button onclick="window.deleteInventoryItem('${i.id}')" class="text-red-500 hover:bg-red-50 p-2 rounded"><i class="fas fa-trash"></i></button></td>
                 </tr>
             `).join('');
         };
@@ -528,36 +741,30 @@
         window.renderAdminPibg = () => {
              const tb = document.getElementById('adm-pibg-body');
              if(!tb) return;
-             const list = window.orders.filter(o => window.calculateSpecificItemCost(o, 'PIBG') > 0);
-             tb.innerHTML = list.length ? list.map(o => {
-                const pibgFee = window.calculateSpecificItemCost(o, 'PIBG');
-                return `
+             const pibgItems = [...window.itemsA, ...window.itemsB].filter(i => i.name.toUpperCase().includes('PIBG')).map(i => i.id);
+             const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => pibgItems.includes(k)));
+             tb.innerHTML = list.length ? list.map(o => `
                 <tr class="border-b hover:bg-yellow-50 text-sm">
                     <td class="p-3 uppercase font-bold">${o.name}</td>
                     <td class="p-3 uppercase text-xs">${o.parent}</td>
-                    <td class="p-3 text-center font-mono text-xs font-bold text-slate-700">RM ${pibgFee.toFixed(2)}</td>
-                    <td class="p-3 text-center text-xs font-bold ${o.paid >= o.total ? 'text-green-600' : 'text-red-500'}">
-                        ${o.paid >= o.total ? '<i class="fas fa-check"></i> LUNAS' : 'BELUM'}
-                    </td>
+                    <td class="p-3 text-center text-green-600 font-bold text-xs"><i class="fas fa-check"></i> YA</td>
+                    <td class="p-3 text-center font-mono text-xs">RM ${(o.paid||0).toFixed(2)}</td>
                 </tr>
-             `}).join('') : '<tr><td colspan="4" class="p-6 text-center text-slate-400">Tiada rekod PIBG.</td></tr>';
+             `).join('') : '<tr><td colspan="4" class="p-6 text-center text-slate-400">Tiada rekod PIBG.</td></tr>';
         };
 
         window.renderAdminNametags = () => {
              const tb = document.getElementById('adm-tag-body');
              if(!tb) return;
-             const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
+             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
              const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)));
-             tb.innerHTML = list.length ? list.map(o => {
-                let qty = 0;
-                Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
-                return `
+             tb.innerHTML = list.length ? list.map(o => `
                 <tr class="border-b hover:bg-purple-50 text-sm">
                     <td class="p-3 uppercase font-medium">${o.name}</td>
                     <td class="p-3 font-bold uppercase text-purple-700">${o.tagName||'-'}</td>
-                    <td class="p-3 text-center font-bold">${qty}</td>
+                    <td class="p-3 text-center"><button onclick="window.updateTagStatus('${o.id}', ${o.tagStatus})" class="px-2 py-1 rounded text-[10px] font-bold text-white ${o.tagStatus?'bg-green-500':'bg-amber-500'}">${o.tagStatus?'SIAP':'PROSES'}</button></td>
                 </tr>
-             `}).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
+             `).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
         };
 
         window.renderAdminLogs = () => {
@@ -567,73 +774,119 @@
             tb.innerHTML = sorted.map(o => `<tr class="border-b text-xs"><td class="p-3 text-slate-400 font-mono">${new Date(o.timestamp).toLocaleString('ms-MY')}</td><td class="p-3 font-bold text-blue-600">ORDER</td><td class="p-3 uppercase">Tempahan oleh ${o.name} (RM ${o.total.toFixed(2)})</td></tr>`).join('');
         };
 
-        // --- ADMIN SETTINGS (TELEGRAM) ---
-        window.renderAdminSettings = async () => {
-            const tokenInput = document.getElementById('tg-token');
-            const chatInput = document.getElementById('tg-chat-id');
-            // Populate if already fetched
-            if(window.appConfig.telegramBotToken) tokenInput.value = window.appConfig.telegramBotToken;
-            if(window.appConfig.telegramChatId) chatInput.value = window.appConfig.telegramChatId;
-        };
-
-        window.saveAdminSettings = async () => {
-            const token = document.getElementById('tg-token').value.trim();
-            const chatId = document.getElementById('tg-chat-id').value.trim();
-            const btn = document.getElementById('btn-save-settings');
-            
-            btn.innerText = "MENYIMPAN...";
-            btn.disabled = true;
-
-            try {
-                const newData = { telegramBotToken: token, telegramChatId: chatId };
-                await setDoc(configDocRef, newData, { merge: true });
-                window.appConfig = newData; // Update local state
-                alert("Tetapan berjaya disimpan!");
-            } catch(e) {
-                alert("Gagal simpan: " + e.message);
-            } finally {
-                btn.innerText = "SIMPAN TETAPAN";
-                btn.disabled = false;
+        window.renderAdminSettings = () => {
+            const toggle = document.getElementById('systemStatusToggle');
+            const msgInput = document.getElementById('closedMessageInput');
+            if(toggle && msgInput) {
+                toggle.checked = window.systemConfig.ordersOpen;
+                msgInput.value = window.systemConfig.closedMessage || "";
             }
         };
 
-        // --- BULK ACTIONS ---
+        // --- SETTINGS LOGIC ---
+        window.saveSystemSettings = async () => {
+             const isOpen = document.getElementById('systemStatusToggle').checked;
+             const msg = document.getElementById('closedMessageInput').value;
+             try {
+                 await setDoc(configDocRef, { ordersOpen: isOpen, closedMessage: msg }, { merge: true });
+                 window.systemConfig = { ordersOpen: isOpen, closedMessage: msg };
+                 window.updateSystemUI();
+                 alert("Tetapan sistem berjaya disimpan.");
+             } catch(e) {
+                 alert("Ralat menyimpan tetapan: " + e.message);
+             }
+        };
+
+        window.updateSystemUI = () => {
+            const btn = document.getElementById('btnToggleSystem');
+            if(btn) {
+                if(window.isSystemOpen) {
+                    btn.innerText = "DIBUKA (ON)";
+                    btn.className = "px-6 py-2 rounded-lg font-bold text-xs text-white transition shadow-lg bg-green-500 hover:bg-green-600";
+                } else {
+                    btn.innerText = "DITUTUP (OFF)";
+                    btn.className = "px-6 py-2 rounded-lg font-bold text-xs text-white transition shadow-lg bg-red-500 hover:bg-red-600";
+                }
+            }
+            const landingBtn = document.getElementById('landingStartBtn');
+            const landingMsg = document.getElementById('landingStatusMsg');
+            if(landingBtn) {
+                if(window.isSystemOpen) {
+                     landingBtn.innerHTML = 'MULA SEKARANG <i class="fas fa-arrow-right ml-2"></i>';
+                     landingBtn.classList.remove('btn-disabled');
+                     landingBtn.onclick = window.startOrder;
+                     if(landingMsg) landingMsg.classList.add('hidden');
+                } else {
+                     landingBtn.innerHTML = 'TEMPAHAN DITUTUP <i class="fas fa-lock ml-2"></i>';
+                     landingBtn.classList.add('btn-disabled');
+                     landingBtn.onclick = null;
+                     if(landingMsg) landingMsg.classList.remove('hidden');
+                }
+            }
+        };
+
+        window.toggleSystemStatus = async () => {
+            const newState = !window.isSystemOpen;
+            try {
+                await setDoc(configDocRef, { isSystemOpen: newState }, { merge: true });
+            } catch(e) { alert("Gagal kemaskini status: " + e.message); }
+        };
+
+        // --- BULK & DELETE ACTIONS ---
         window.toggleSelectAll = (source, selector) => document.querySelectorAll(selector).forEach(box => box.checked = source.checked);
+
         window.deleteSelectedOrders = async () => {
              const cbs = document.querySelectorAll('.order-checkbox:checked');
              if(!cbs.length) return alert("Pilih tempahan dahulu.");
              if(confirm(`Padam ${cbs.length} tempahan?`)) {
-                 const btn = document.querySelector('button[onclick="window.deleteSelectedOrders()"]');
-                 const old = btn.innerHTML; btn.innerHTML = 'PROSES...'; btn.disabled = true;
-                 try { const batch = writeBatch(db); cbs.forEach(cb => batch.delete(doc(db, 'book_orders', cb.dataset.id))); await batch.commit(); document.getElementById('orderSelectAll').checked = false; }
-                 catch(e) { alert("Gagal: " + e.message); } finally { btn.innerHTML = old; btn.disabled = false; }
+                 const batch = writeBatch(db);
+                 cbs.forEach(cb => batch.delete(doc(db, 'book_orders', cb.dataset.id)));
+                 await batch.commit();
+                 document.getElementById('orderSelectAll').checked = false;
              }
         };
+
         window.deleteSelectedItems = async () => {
              const cbs = document.querySelectorAll('.inv-checkbox:checked');
              if(!cbs.length) return alert("Pilih item dahulu.");
              if(confirm(`Padam ${cbs.length} item?`)) {
-                 const btn = document.querySelector('button[onclick="window.deleteSelectedItems()"]');
-                 const old = btn.innerHTML; btn.innerHTML = 'PROSES...'; btn.disabled = true;
-                 try { const batch = writeBatch(db); cbs.forEach(cb => batch.delete(doc(db, 'book_items', cb.dataset.id))); await batch.commit(); document.getElementById('invSelectAll').checked = false; }
-                 catch(e) { alert("Gagal: " + e.message); } finally { btn.innerHTML = old; btn.disabled = false; }
+                 const batch = writeBatch(db);
+                 cbs.forEach(cb => batch.delete(doc(db, 'book_items', cb.dataset.id)));
+                 await batch.commit();
+                 document.getElementById('invSelectAll').checked = false;
              }
         };
-        window.deleteInventoryItem = async (id, btn) => {
-            if(confirm("Padam item ini?")) {
-                const old = btn.innerHTML; btn.innerHTML = '...'; btn.disabled = true;
-                try { await deleteDoc(doc(db, 'book_items', id)); } catch(e) { alert("Ralat: " + e.message); btn.innerHTML = old; btn.disabled = false; }
+
+        window.deleteInventoryItem = (id) => {
+            if(confirm("Adakah anda pasti ingin memadam item ini dari inventori?\nTindakan ini tidak boleh dikembalikan.")) {
+                deleteDoc(doc(db, 'book_items', id)).catch(e => alert("Ralat: " + e.message));
             }
         };
 
-        // --- LISTENERS ---
+        // --- FIREBASE LISTENERS ---
         const init = async () => {
             try {
+                const settingsDoc = await getDoc(configDocRef);
+                if (settingsDoc.exists()) {
+                    const d = settingsDoc.data();
+                    window.systemConfig = d;
+                    window.isSystemOpen = d.isSystemOpen !== undefined ? d.isSystemOpen : true;
+                }
+                window.updateSystemUI();
+
                 onAuthStateChanged(auth, (user) => {
-                    if (user && !user.isAnonymous) { window.isAdminUser = true; if(!document.getElementById('adminLoginModal').classList.contains('hidden')) { window.closeAdminModal(); window.switchView('admin'); } }
-                    else window.isAdminUser = false;
+                    if (user && !user.isAnonymous) {
+                         window.isAdminUser = true;
+                         if(!document.getElementById('adminLoginModal').classList.contains('hidden')) {
+                             window.closeAdminModal();
+                             window.switchView('admin');
+                         }
+                    } else {
+                         window.isAdminUser = false;
+                    }
                 });
-                await signInAnonymously(auth).catch(e => console.log("Public access active."));
+
+                await signInAnonymously(auth).catch(e => console.log("Public mode enabled/Anonymous error handled."));
                 
                 onSnapshot(query(itemsColl), (snap) => {
                     const all = []; snap.forEach(d => all.push({ id: d.id, ...d.data() }));
@@ -648,146 +901,84 @@
                          if(currentTab) window.setAdminTab(currentTab);
                     }
                 });
-                // Fetch Settings once on load
-                const snap = await getDoc(configDocRef);
-                if(snap.exists()) window.appConfig = snap.data();
-            } catch(e) { console.error("Init Error", e); }
+                onSnapshot(configDocRef, (doc) => {
+                    if(doc.exists()) {
+                        const d = doc.data();
+                        window.systemConfig = d;
+                        window.isSystemOpen = d.isSystemOpen !== undefined ? d.isSystemOpen : true;
+                        window.updateSystemUI();
+                    }
+                });
+            } catch(e) { console.error("DB Error", e); }
         };
         window.addEventListener('DOMContentLoaded', init);
 
-        // --- OTHER UTILS ---
-        window.openAdminModal = () => { if(window.isAdminUser) window.switchView('admin'); else document.getElementById('adminLoginModal').classList.remove('hidden'); };
-        window.closeAdminModal = () => document.getElementById('adminLoginModal').classList.add('hidden');
-        window.loginWithEmail = async () => {
-            const email = document.getElementById('adminEmailInput').value.trim(); const pass = document.getElementById('adminPasswordInput').value;
-            if(!email || !pass) { alert("Sila masukkan email dan kata laluan."); return; }
-            try { await signInWithEmailAndPassword(auth, email, pass); } catch(e) { alert("Log masuk gagal: " + e.code); }
+        // Modals & Helpers
+        window.openAdminModal = () => {
+            if(window.isAdminUser) window.switchView('admin');
+            else document.getElementById('adminLoginModal').classList.remove('hidden');
         };
-        window.loginWithGoogle = async () => { try { await signInWithPopup(auth, googleProvider); } catch(e) { alert("Ralat Google: " + e.message); } };
-        window.logoutAdmin = () => { if(window.isAdminUser) signOut(auth).then(() => { window.isAdminUser = false; window.goHome(); }); else window.goHome(); };
         
+        window.closeAdminModal = () => document.getElementById('adminLoginModal').classList.add('hidden');
+        
+        window.loginWithEmail = async () => {
+             const email = document.getElementById('adminEmailInput').value.trim(); const pass = document.getElementById('adminPasswordInput').value;
+             if(!email || !pass) { alert("Sila masukkan email dan kata laluan."); return; }
+             try {
+                 await signInWithEmailAndPassword(auth, email, pass);
+             } catch(e) {
+                 document.getElementById('loginError').classList.remove('hidden');
+             }
+        };
+
+        window.togglePasswordVisibility = () => {
+            const passwordInput = document.getElementById('adminPasswordInput');
+            const eyeIcon = document.getElementById('eyeIcon');
+            if (passwordInput.type === 'password') {
+                passwordInput.type = 'text';
+                eyeIcon.classList.remove('fa-eye');
+                eyeIcon.classList.add('fa-eye-slash');
+            } else {
+                passwordInput.type = 'password';
+                eyeIcon.classList.remove('fa-eye-slash');
+                eyeIcon.classList.add('fa-eye');
+            }
+        };
+        
+        window.logoutAdmin = async () => {
+             await signOut(auth);
+             window.goHome();
+        };
+
         window.openAddItemModal = () => document.getElementById('addItemModal').classList.remove('hidden');
         window.closeAddItemModal = () => document.getElementById('addItemModal').classList.add('hidden');
         window.saveNewItem = async () => {
-             const name = document.getElementById('newItemName').value; const price = parseFloat(document.getElementById('newItemPrice').value); const category = document.getElementById('newItemCategory').value;
+             const name = document.getElementById('newItemName').value;
+             const price = parseFloat(document.getElementById('newItemPrice').value);
+             const category = document.getElementById('newItemCategory').value;
+             const isNametag = document.getElementById('newItemNametag').checked;
              if(!name || isNaN(price)) return alert("Isi semua data.");
-             const btn = document.getElementById('btnSaveItem'); btn.innerText = "SIMPAN..."; btn.disabled = true;
-             try { await addDoc(itemsColl, { name, price, category, order: Date.now() }); window.closeAddItemModal(); document.getElementById('newItemName').value = ''; document.getElementById('newItemPrice').value = ''; }
-             catch(e) { alert("Gagal: " + e.message); } finally { btn.innerText = "SIMPAN"; btn.disabled = false; }
+             await addDoc(itemsColl, { name, price, category, isNametag, order: Date.now() });
+             window.closeAddItemModal();
+             document.getElementById('newItemName').value = '';
+             document.getElementById('newItemPrice').value = '';
         };
 
-        window.openPaymentModal = (id) => {
+        window.openPaymentModal = (id, cur, tot) => {
             window.selectedOrderIdForPayment = id;
-            const order = window.orders.find(o => o.id === id);
-            if (!order) return;
-            const listEl = document.getElementById('paymentHistoryList'); listEl.innerHTML = '';
-            let logs = order.paymentLogs || [];
-            if (logs.length === 0 && (order.paid || 0) > 0) logs = [{ date: "Rekod Lama", amount: order.paid }];
-            if (logs.length > 0) {
-                logs.forEach((log, idx) => {
-                    let dateStr = log.date; 
-                    if(typeof log.date === 'number') dateStr = new Date(log.date).toLocaleDateString('ms-MY') + ' ' + new Date(log.date).toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'});
-                    listEl.innerHTML += `<div class="flex justify-between items-center text-xs border-b border-slate-100 py-2"><span class="text-slate-500 font-mono">${idx + 1}. ${dateStr}</span><span class="font-bold text-slate-700">RM ${parseFloat(log.amount).toFixed(2)}</span></div>`;
-                });
-            } else listEl.innerHTML = '<p class="text-center text-slate-400 text-xs py-4 italic bg-slate-50 rounded-lg">Tiada rekod bayaran terdahulu.</p>';
-            const total = order.total || 0; const paid = order.paid || 0; const balance = total - paid;
-            document.getElementById('paymentModalTotal').innerText = `RM ${total.toFixed(2)}`;
-            document.getElementById('paymentModalPaid').innerText = `RM ${paid.toFixed(2)}`;
-            const balEl = document.getElementById('paymentModalBalance'); balEl.innerText = `RM ${balance.toFixed(2)}`;
-            balEl.className = balance > 0 ? "font-black text-red-500 text-lg" : "font-black text-green-500 text-lg";
-            document.getElementById('paymentInput').value = ''; document.getElementById('paymentModal').classList.remove('hidden');
+            document.getElementById('paymentModalTotal').innerText = `RM ${tot.toFixed(2)}`;
+            document.getElementById('paymentInput').value = cur;
+            document.getElementById('paymentModal').classList.remove('hidden');
         };
         window.closePaymentModal = () => document.getElementById('paymentModal').classList.add('hidden');
-        
-        // --- UPDATED SAVE PAYMENT FUNCTION (Fixes Issue) ---
         window.savePayment = async () => {
-            const val = parseFloat(document.getElementById('paymentInput').value); 
-            const orderId = window.selectedOrderIdForPayment;
-            
-            if (orderId && !isNaN(val) && val > 0) {
-                // UI Feedback
-                const btn = document.querySelector('button[onclick="window.savePayment()"]');
-                const originalText = btn.innerText;
-                btn.innerText = "SIMPAN...";
-                btn.disabled = true;
-
-                try {
-                    const order = window.orders.find(o => o.id === orderId);
-                    if(!order) throw new Error("Data tempahan tidak dijumpai.");
-
-                    // Prepare data
-                    const currentPaid = parseFloat(order.paid) || 0;
-                    const newTotalPaid = currentPaid + val;
-                    
-                    // Handle Logs (Clone array to avoid mutation issues)
-                    let logs = [];
-                    if (order.paymentLogs && Array.isArray(order.paymentLogs)) {
-                        logs = [...order.paymentLogs];
-                    }
-
-                    // Legacy migration: If paid > 0 but no logs, add a 'Legacy' log entry
-                    if (logs.length === 0 && currentPaid > 0) {
-                        logs.push({
-                            date: "Rekod Lama",
-                            timestamp: Date.now(),
-                            amount: currentPaid
-                        });
-                    }
-
-                    // Create new log entry
-                    const newLog = { 
-                        date: new Date().toLocaleDateString('ms-MY') + ' ' + new Date().toLocaleTimeString('ms-MY', {hour: '2-digit', minute:'2-digit'}), 
-                        timestamp: Date.now(), 
-                        amount: val 
-                    };
-                    logs.push(newLog);
-
-                    // Firestore Update
-                    const orderRef = doc(db, 'book_orders', orderId);
-                    await updateDoc(orderRef, { 
-                        paid: newTotalPaid, 
-                        paymentLogs: logs 
-                    });
-
-                    // Success
-                    alert("Bayaran berjaya dikemaskini!");
-                    window.closePaymentModal();
-                    
-                } catch(e) { 
-                    console.error("Save Payment Error:", e);
-                    alert("Gagal simpan bayaran: " + e.message + "\nSila pastikan anda login sebagai Admin."); 
-                } finally {
-                    btn.innerText = originalText;
-                    btn.disabled = false;
-                }
-            } else {
-                alert("Sila masukkan jumlah bayaran yang sah (Nombor sahaja).");
+            const val = parseFloat(document.getElementById('paymentInput').value);
+            if(window.selectedOrderIdForPayment && !isNaN(val)) {
+                await updateDoc(doc(db, 'book_orders', window.selectedOrderIdForPayment), { paid: val });
+                window.closePaymentModal();
             }
         };
-
-        window.exportPibgCsv = () => {
-            const data = [["Nama Murid", "Nama Penjaga", "Yuran PIBG (RM)", "Status"]];
-            window.orders.forEach(o => { const c = window.calculateSpecificItemCost(o, 'PIBG'); if(c>0) data.push([`"${o.name}"`, `"${o.parent}"`, c.toFixed(2), (o.paid>=o.total?"SELESAI":"BELUM")]); });
-            window.generateCSV(data, "Laporan_PIBG.csv");
-        };
-        window.exportPibgPdf = () => {
-            const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.text("Laporan Yuran PIBG 2026", 14, 20);
-            const body = []; window.orders.forEach(o => { const c = window.calculateSpecificItemCost(o, 'PIBG'); if(c>0) body.push([o.name, o.parent, `RM ${c.toFixed(2)}`, (o.paid>=o.total?"SELESAI":"BELUM")]); });
-            doc.autoTable({ head: [['Nama Murid', 'Penjaga', 'Yuran PIBG', 'Status']], body: body, startY: 30 }); doc.save("Laporan_PIBG.pdf");
-        };
-        window.exportNametagCsv = () => {
-             const data = [["Nama Murid", "Tag Nama", "Kuantiti"]]; const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
-             window.orders.forEach(o => { if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) { let qty = 0; Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; }); data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, qty]); } });
-             window.generateCSV(data, "Senarai_Nametag.csv");
-        };
-        window.exportNametagPdf = () => {
-            const { jsPDF } = window.jspdf; const doc = new jsPDF(); doc.text("Senarai Tempahan Nametag", 14, 20); const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name)).map(i => i.id);
-            const body = []; window.orders.forEach(o => { if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) { let qty = 0; Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; }); body.push([o.name, o.tagName || '-', qty]); } });
-            doc.autoTable({ head: [['Nama Murid', 'Teks Tag Nama', 'Kuantiti']], body: body, startY: 30 }); doc.save("Senarai_Nametag.pdf");
-        };
-        window.generateCSV = (data, filename) => { const c = "data:text/csv;charset=utf-8," + data.map(e => e.join(",")).join("\n"); const l = document.createElement("a"); l.setAttribute("href", encodeURI(c)); l.setAttribute("download", filename); document.body.appendChild(l); l.click(); document.body.removeChild(l); };
-
-        window.togglePassword = () => { const i = document.getElementById('adminPasswordInput'); const c = document.getElementById('passIcon'); if (i.type === "password") { i.type = "text"; c.className="fas fa-eye-slash"; } else { i.type = "password"; c.className="fas fa-eye"; } };
+        window.updateTagStatus = async (id, cur) => await updateDoc(doc(db, 'book_orders', id), { tagStatus: !cur });
     </script>
 </head>
 <body class="bg-slate-50 flex flex-col min-h-screen text-slate-800">
@@ -796,7 +987,7 @@
     <nav id="mainNavbar" class="bg-white/90 backdrop-blur-md sticky top-0 z-40 px-6 py-4 shadow-sm border-b border-slate-100 transition-all no-print">
         <div class="container mx-auto flex justify-between items-center">
             <div class="flex items-center gap-3 cursor-pointer" onclick="window.goHome()">
-                <div class="bg-brand-600 text-white p-2 rounded-lg shadow-lg shadow-brand-200"><i class="fas fa-book-open text-xl"></i></div>
+                <div class="bg-brand-600 text-white p-2 rounded-lg shadow-lg shadow-brand-200"><img src="https://i.postimg.cc/k4N1mPR1/semat-04.png" class="w-8 h-8 object-contain"/></div>
                 <div><h1 class="text-lg font-black tracking-tight text-slate-800 leading-none">PRASEKOLAH LAVENDER</h1><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-0.5">Sistem Pengurusan Yuran</p></div>
             </div>
             <button onclick="window.openAdminModal()" class="text-slate-400 hover:text-brand-600 font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition px-3 py-2 hover:bg-slate-50 rounded-lg"><i class="fas fa-lock"></i> Admin</button>
@@ -811,14 +1002,17 @@
                 <div class="w-16 h-16 bg-brand-100 text-brand-600 rounded-2xl flex items-center justify-center text-3xl mb-6 relative z-10 shadow-sm"><i class="fas fa-cart-plus"></i></div>
                 <h2 class="text-2xl font-bold text-slate-800 mb-2 relative z-10">Buat Tempahan Baru</h2>
                 <p class="text-slate-500 text-sm mb-8 relative z-10">Daftar item keperluan persekolahan dan jana invois.</p>
-                <span class="text-brand-600 font-bold text-sm flex items-center">MULA SEKARANG <i class="fas fa-arrow-right ml-2"></i></span>
+                <div class="mt-4 relative z-10">
+                    <p id="landingStatusMsg" class="hidden text-red-500 text-xs font-bold mb-2 bg-red-50 p-2 rounded">Maaf, sistem tempahan ditutup buat sementara waktu.</p>
+                    <button id="landingStartBtn" class="text-brand-600 font-bold text-sm flex items-center group-hover:gap-2 transition-all">MULA SEKARANG <i class="fas fa-arrow-right ml-2"></i></button>
+                </div>
             </div>
             <div onclick="window.startCheck()" class="bg-white p-8 rounded-3xl shadow-xl hover:shadow-2xl transition-all cursor-pointer border-2 border-transparent hover:border-blue-500 group relative overflow-hidden">
                 <div class="absolute top-0 right-0 bg-blue-50 w-32 h-32 rounded-bl-full -mr-8 -mt-8 opacity-50 group-hover:scale-110 transition-transform"></div>
                 <div class="w-16 h-16 bg-blue-100 text-blue-600 rounded-2xl flex items-center justify-center text-3xl mb-6 relative z-10 shadow-sm"><i class="fas fa-magnifying-glass-dollar"></i></div>
                 <h2 class="text-2xl font-bold text-slate-800 mb-2 relative z-10">Semakan Status</h2>
-                <p class="text-slate-500 text-sm mb-8 relative z-10">Semak status bayaran dan cetak semula resit.</p>
-                <span class="text-blue-600 font-bold text-sm flex items-center">SEMAK REKOD <i class="fas fa-arrow-right ml-2"></i></span>
+                <p class="text-slate-500 text-sm mb-8 relative z-10">Semak status bayaran, kemaskini tempahan dan cetak semula resit.</p>
+                <span class="text-blue-600 font-bold text-sm flex items-center group-hover:gap-2 transition-all">SEMAK REKOD <i class="fas fa-arrow-right ml-2"></i></span>
             </div>
         </div>
     </div>
@@ -906,72 +1100,19 @@
 
     <!-- ADMIN VIEW -->
     <div id="admin-view" class="hidden fixed inset-0 bg-slate-50 z-50 flex h-screen overflow-hidden no-print">
-        <aside class="w-16 md:w-64 bg-slate-900 text-white flex flex-col shrink-0 shadow-2xl relative z-10 transition-all duration-300">
-            <!-- Header -->
-            <div class="h-16 flex items-center justify-center md:justify-start md:px-6 border-b border-slate-800 md:gap-3">
-                <div class="w-8 h-8 rounded bg-brand-500 flex items-center justify-center font-bold text-lg shrink-0 cursor-default">A</div>
-                <div class="hidden md:block">
-                    <h2 class="font-bold text-sm tracking-wide leading-tight">ADMIN</h2>
-                    <p class="text-[9px] text-slate-500 leading-tight">Prasekolah Lavender</p>
-                </div>
-            </div>
-
-            <!-- Nav -->
-            <nav class="flex-grow p-2 md:p-4 space-y-2 overflow-y-auto custom-scrollbar">
-                <!-- Dashboard -->
-                <button onclick="window.setAdminTab('dash')" id="nav-dash" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
-                    <i class="fas fa-chart-pie text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Dashboard</span>
-                </button>
-                
-                <!-- Tempahan -->
-                <button onclick="window.setAdminTab('orders')" id="nav-orders" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
-                    <i class="fas fa-file-invoice text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Tempahan</span>
-                </button>
-
-                <!-- Inventori -->
-                <button onclick="window.setAdminTab('inventory')" id="nav-inventory" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
-                    <i class="fas fa-boxes text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Inventori</span>
-                </button>
-
-                <!-- Divider / Label -->
-                <div class="hidden md:block pt-4 pb-1 pl-4 text-[10px] font-bold text-slate-600 uppercase tracking-widest">Laporan</div>
-                <div class="md:hidden border-t border-slate-800 my-2"></div>
-
-                <!-- PIBG -->
-                <button onclick="window.setAdminTab('pibg')" id="nav-pibg" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
-                    <i class="fas fa-hand-holding-heart text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Yuran PIBG</span>
-                </button>
-
-                <!-- Nametag -->
-                <button onclick="window.setAdminTab('nametag')" id="nav-nametag" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
-                    <i class="fas fa-id-badge text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Nametag</span>
-                </button>
-
-                <!-- Log -->
-                <button onclick="window.setAdminTab('log')" id="nav-log" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group">
-                    <i class="fas fa-history text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Log Aktiviti</span>
-                </button>
-
-                 <!-- Tetapan -->
-                 <button onclick="window.setAdminTab('settings')" id="nav-settings" class="admin-nav-item w-full flex items-center justify-center md:justify-start px-2 md:px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-800 hover:text-white transition group mt-4">
-                    <i class="fas fa-cog text-lg md:text-base w-6 text-center group-hover:scale-110 transition-transform"></i>
-                    <span class="hidden md:inline ml-3 text-sm font-medium">Tetapan</span>
-                </button>
+        <aside class="w-64 bg-slate-900 text-white flex flex-col shrink-0 shadow-2xl relative z-10">
+            <div class="p-6 border-b border-slate-800 flex items-center gap-3"><div class="w-8 h-8 rounded bg-brand-500 flex items-center justify-center font-bold text-lg">A</div><div><h2 class="font-bold text-sm tracking-wide">ADMIN PANEL</h2><p class="text-[10px] text-slate-500">Prasekolah Lavender</p></div></div>
+            <nav class="flex-grow p-4 space-y-1 overflow-y-auto custom-scrollbar">
+                <button onclick="window.setAdminTab('dash')" id="nav-dash" class="admin-nav-item w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition flex items-center"><i class="fas fa-chart-pie w-6 opacity-70"></i> Dashboard</button>
+                <button onclick="window.setAdminTab('orders')" id="nav-orders" class="admin-nav-item w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition flex items-center"><i class="fas fa-file-invoice w-6 opacity-70"></i> Tempahan</button>
+                <button onclick="window.setAdminTab('inventory')" id="nav-inventory" class="admin-nav-item w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition flex items-center"><i class="fas fa-boxes w-6 opacity-70"></i> Inventori</button>
+                <div class="pt-6 pb-2 pl-4 text-[10px] font-bold text-slate-600 uppercase tracking-widest">Laporan</div>
+                <button onclick="window.setAdminTab('pibg')" id="nav-pibg" class="admin-nav-item w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition flex items-center"><i class="fas fa-hand-holding-heart w-6 opacity-70"></i> Yuran PIBG</button>
+                <button onclick="window.setAdminTab('nametag')" id="nav-nametag" class="admin-nav-item w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition flex items-center"><i class="fas fa-id-badge w-6 opacity-70"></i> Nametag</button>
+                <button onclick="window.setAdminTab('log')" id="nav-log" class="admin-nav-item w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition flex items-center"><i class="fas fa-history w-6 opacity-70"></i> Log Aktiviti</button>
+                <button onclick="window.setAdminTab('settings')" id="nav-settings" class="admin-nav-item w-full text-left px-4 py-3 rounded-lg text-sm font-medium text-slate-400 hover:bg-slate-800 hover:text-white transition flex items-center"><i class="fas fa-cog w-6 opacity-70"></i> Tetapan</button>
             </nav>
-
-            <!-- Logout -->
-            <div class="p-2 md:p-4 border-t border-slate-800 bg-slate-900">
-                <button onclick="window.logoutAdmin()" class="w-full flex items-center justify-center border border-red-900/50 text-red-500 py-2.5 rounded-lg hover:bg-red-950 transition group" title="Keluar">
-                    <i class="fas fa-sign-out-alt text-lg md:mr-2"></i>
-                    <span class="hidden md:inline text-xs font-bold">KELUAR</span>
-                </button>
-            </div>
+            <div class="p-4 border-t border-slate-800 bg-slate-900"><button onclick="window.logoutAdmin()" class="w-full border border-red-900/50 text-red-500 py-2.5 rounded-lg text-xs font-bold hover:bg-red-950 transition">KELUAR</button></div>
         </aside>
 
         <main class="flex-grow overflow-y-auto p-8 custom-scrollbar bg-slate-50/50 relative">
@@ -994,72 +1135,73 @@
                 <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 text-xs text-slate-500 uppercase font-bold"><tr><th class="p-4 w-10 text-center"><input type="checkbox" id="invSelectAll" onchange="window.toggleSelectAll(this, '.inv-checkbox')" class="rounded"></th><th class="p-4">Item</th><th class="p-4 text-center">Kategori</th><th class="p-4 text-center">Harga</th><th class="p-4 text-center">Aksi</th></tr></thead><tbody id="adm-inv-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
             <div id="adm-pibg" class="hidden admin-tab animate-fadeUp">
-                <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Yuran PIBG</h2><div class="flex gap-2"><button onclick="window.exportPibgCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportPibgPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-yellow-100 text-yellow-900 border-b border-yellow-200 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Nama Penjaga</th><th class="p-4 text-center">Yuran PIBG (RM)</th><th class="p-4 text-center">Status Bayaran</th></tr></thead><tbody id="adm-pibg-body" class="divide-y divide-slate-100"></tbody></table></div>
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-slate-800">Yuran PIBG</h2>
+                    <div class="flex gap-2">
+                        <button onclick="window.exportPibgCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button>
+                        <button onclick="window.exportPibgPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button>
+                    </div>
+                </div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-yellow-100 text-yellow-900 border-b border-yellow-200 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Nama Penjaga</th><th class="p-4 text-center">Bayaran (RM)</th><th class="p-4 text-center">Status Bayaran</th></tr></thead><tbody id="adm-pibg-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
-            
             <div id="adm-nametag" class="hidden admin-tab animate-fadeUp">
-                <div class="flex justify-between items-center mb-6"><h2 class="text-2xl font-bold text-slate-800">Tempahan Nametag</h2><div class="flex gap-2"><button onclick="window.exportNametagCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button><button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button></div></div>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Kuantiti</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-slate-800">Tempahan Nametag</h2>
+                     <div class="flex gap-2">
+                        <button onclick="window.exportNametagCsv()" class="bg-green-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-green-700">Excel</button>
+                        <button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button>
+                    </div>
+                </div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Status</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
+            </div>
+            <div id="adm-log" class="hidden admin-tab animate-fadeUp">
+                <h2 class="text-2xl font-bold text-slate-800 mb-6">Log Aktiviti</h2>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 font-bold text-xs uppercase text-slate-500"><tr><th class="p-4 w-40">Masa</th><th class="p-4 w-32">Aksi</th><th class="p-4">Perincian</th></tr></thead><tbody id="adm-log-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
             
-            <div id="adm-log" class="hidden admin-tab animate-fadeUp"><h2 class="text-2xl font-bold text-slate-800 mb-6">Log Aktiviti</h2><div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-slate-50 border-b border-slate-200 font-bold text-xs uppercase text-slate-500"><tr><th class="p-4 w-40">Masa</th><th class="p-4 w-32">Aksi</th><th class="p-4">Perincian</th></tr></thead><tbody id="adm-log-body" class="divide-y divide-slate-100"></tbody></table></div></div>
-
-            <!-- New Settings Tab -->
             <div id="adm-settings" class="hidden admin-tab animate-fadeUp">
-                <h2 class="text-2xl font-bold text-slate-800 mb-2">Tetapan Sistem</h2>
-                <p class="text-slate-500 text-sm mb-6">Konfigurasi notifikasi dan integrasi luar.</p>
-
-                <div class="bg-white p-8 rounded-2xl shadow-sm border border-slate-200 max-w-2xl">
-                    <h3 class="font-bold text-lg text-slate-800 mb-4 flex items-center"><i class="fab fa-telegram text-blue-500 mr-2"></i> Notifikasi Telegram</h3>
-                    <p class="text-xs text-slate-500 mb-6 bg-blue-50 p-4 rounded-lg border border-blue-100 leading-relaxed">
-                        Sistem boleh menghantar notifikasi automatik ke dalam group Telegram apabila ibu bapa menghantar tempahan baru.<br><br>
-                        <b>Cara Setup:</b><br>
-                        1. Buat bot baru di Telegram menggunakan <b>@BotFather</b> dan dapatkan <b>Token</b>.<br>
-                        2. Buat Group baru, masukkan Bot anda ke dalamnya, dan jadikan Bot sebagai <b>Admin</b>.<br>
-                        3. Dapatkan <b>Chat ID</b> group tersebut (boleh guna bot seperti @getmyid_bot).
-                    </p>
-                    
-                    <div class="space-y-4">
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-slate-800">Tetapan Sistem</h2>
+                </div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-8 max-w-lg">
+                    <h3 class="font-bold text-lg text-slate-800 mb-4">Status Tempahan</h3>
+                    <div class="flex items-center justify-between bg-slate-50 p-4 rounded-xl border border-slate-100">
                         <div>
-                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Telegram Bot Token</label>
-                            <input type="text" id="tg-token" class="w-full border border-slate-200 p-3 rounded-lg outline-none focus:border-brand-500 font-mono text-sm" placeholder="Contoh: 123456789:AAH...">
+                            <p class="text-sm font-bold text-slate-700">Kawal Penerimaan Tempahan</p>
+                            <p class="text-xs text-slate-500 mt-1">Tutup sistem apabila kuota penuh atau tarikh tutup.</p>
                         </div>
-                        <div>
-                            <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Telegram Group Chat ID</label>
-                            <input type="text" id="tg-chat-id" class="w-full border border-slate-200 p-3 rounded-lg outline-none focus:border-brand-500 font-mono text-sm" placeholder="Contoh: -1001234567890">
-                        </div>
-                        <button id="btn-save-settings" onclick="window.saveAdminSettings()" class="bg-brand-600 hover:bg-brand-700 text-white px-6 py-3 rounded-xl font-bold text-sm shadow-lg mt-2">SIMPAN TETAPAN</button>
+                        <button id="btnToggleSystem" onclick="window.toggleSystemStatus()" class="px-6 py-2 rounded-lg font-bold text-xs text-white transition shadow-lg bg-green-500">MEMUATKAN...</button>
                     </div>
                 </div>
             </div>
-
         </main>
     </div>
 
     <!-- MODALS -->
-    <!-- Updated Admin Login Modal with Password Toggle -->
     <div id="adminLoginModal" class="fixed inset-0 bg-slate-900/60 hidden z-[70] flex items-center justify-center p-4 backdrop-blur-sm animate-fadeIn">
         <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
+            <div class="mb-4 flex justify-center"><img src="https://i.postimg.cc/k4N1mPR1/semat-04.png" class="h-16 w-auto"></div>
             <h3 class="text-xl font-bold text-slate-800 mb-4">Akses Pentadbir</h3>
-            <div class="space-y-4 mb-4">
-                <input type="email" id="adminEmailInput" class="w-full bg-slate-50 border border-slate-200 p-4 rounded-xl outline-none focus:border-brand-500 text-sm" placeholder="admin@sekolah.com">
-                
-                <!-- Password Field with Toggle -->
-                <div class="relative">
-                    <input type="password" id="adminPasswordInput" class="w-full bg-slate-50 border border-slate-200 p-4 rounded-xl outline-none focus:border-brand-500 text-center text-xl font-bold pr-12" placeholder="••••">
-                    <button onclick="window.togglePassword()" type="button" class="absolute right-4 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-brand-600 transition">
-                        <i class="fas fa-eye" id="passIcon"></i>
-                    </button>
+            <div class="space-y-3 text-left">
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Email</label>
+                    <input type="email" id="adminEmailInput" class="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl outline-none focus:border-brand-500 text-sm" placeholder="admin@sekolah.com">
+                </div>
+                <div>
+                    <label class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Kata Laluan</label>
+                    <div class="relative">
+                        <input type="password" id="adminPasswordInput" class="w-full bg-slate-50 border border-slate-200 p-3 rounded-xl outline-none focus:border-brand-500 text-sm pr-10" placeholder="••••••••">
+                        <button onclick="window.togglePasswordVisibility()" class="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-brand-600 focus:outline-none">
+                            <i id="eyeIcon" class="fas fa-eye"></i>
+                        </button>
+                    </div>
                 </div>
             </div>
-            <div id="loginError" class="hidden text-red-500 text-xs font-bold mb-4">Log masuk gagal!</div>
-            <button onclick="window.loginWithEmail()" class="w-full bg-slate-900 text-white font-bold py-3 rounded-xl mb-2">MASUK</button>
-            <button onclick="window.loginWithGoogle()" class="w-full bg-white border border-slate-200 text-slate-600 font-bold py-3 rounded-xl mb-4 flex items-center justify-center hover:bg-slate-50"><i class="fab fa-google mr-2 text-red-500"></i> Google</button>
-            <button onclick="window.closeAdminModal()" class="text-slate-400 text-xs font-bold uppercase tracking-widest">Batal</button>
+            <div id="loginError" class="hidden text-red-500 text-xs font-bold mt-3">Email atau kata laluan salah!</div>
+            <button onclick="window.loginWithEmail()" class="w-full bg-brand-600 hover:bg-brand-700 text-white font-bold py-3 rounded-xl mt-6 shadow-lg transition">LOG MASUK</button>
+            <button onclick="window.closeAdminModal()" class="text-slate-400 text-xs font-bold uppercase tracking-widest mt-4 hover:text-slate-600">Batal</button>
         </div>
     </div>
-    
     <div id="addItemModal" class="fixed inset-0 bg-slate-900/60 hidden z-[70] flex items-center justify-center p-4 backdrop-blur-sm">
         <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
             <h3 class="text-lg font-bold text-slate-800 mb-4">Tambah Item</h3>
@@ -1069,59 +1211,52 @@
                     <input type="number" step="0.01" id="newItemPrice" class="w-full border p-3 rounded-lg outline-none text-sm" placeholder="HARGA RM">
                     <select id="newItemCategory" class="w-full border p-3 rounded-lg outline-none text-sm"><option value="B">Pilihan (B)</option><option value="A">Wajib (A)</option></select>
                 </div>
+                <label class="flex items-center text-xs font-bold cursor-pointer"><input type="checkbox" id="newItemNametag" class="mr-2"> Perlu Nametag?</label>
             </div>
-            <div class="flex gap-2"><button onclick="window.closeAddItemModal()" class="flex-1 border py-3 rounded-xl font-bold text-xs">BATAL</button><button id="btnSaveItem" onclick="window.saveNewItem()" class="flex-1 bg-brand-600 text-white py-3 rounded-xl font-bold text-xs">SIMPAN</button></div>
+            <div class="flex gap-2">
+                <button onclick="window.closeAddItemModal()" class="flex-1 border py-3 rounded-xl font-bold text-xs">BATAL</button>
+                <button id="btnSaveItem" onclick="window.saveNewItem()" class="flex-1 bg-brand-600 text-white py-3 rounded-xl font-bold text-xs">SIMPAN</button>
+            </div>
         </div>
     </div>
-
-    <!-- UPDATED PAYMENT MODAL FOR HISTORY -->
     <div id="paymentModal" class="fixed inset-0 bg-slate-900/60 hidden z-[80] flex items-center justify-center p-4 backdrop-blur-sm">
-        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8">
-            <h3 class="text-xl font-bold text-slate-800 mb-2 border-b pb-2">Rekod Bayaran</h3>
-            
-            <!-- History List -->
-            <div id="paymentHistoryList" class="mb-4 max-h-40 overflow-y-auto custom-scrollbar border-b border-slate-100 pb-2">
-                <!-- Log items injected here -->
-            </div>
-
-            <div class="bg-slate-50 rounded-xl p-4 mb-4 grid grid-cols-3 gap-2 text-center">
-                <div>
-                    <p class="text-[9px] font-bold text-slate-400 uppercase">Jumlah</p>
-                    <p class="font-bold text-slate-700" id="paymentModalTotal">RM 0.00</p>
-                </div>
-                <div>
-                    <p class="text-[9px] font-bold text-slate-400 uppercase">Dibayar</p>
-                    <p class="font-bold text-emerald-600" id="paymentModalPaid">RM 0.00</p>
-                </div>
-                <div>
-                    <p class="text-[9px] font-bold text-slate-400 uppercase">Baki</p>
-                    <p class="font-black text-red-500 text-lg" id="paymentModalBalance">RM 0.00</p>
-                </div>
-            </div>
-
-            <div class="mb-6">
-                <label class="text-[10px] font-bold text-brand-500 uppercase tracking-widest block mb-2">Tambah Bayaran Terkini (RM)</label>
-                <input type="number" step="0.01" id="paymentInput" placeholder="0.00" class="w-full bg-slate-50 border-2 border-brand-100 p-3 rounded-xl outline-none focus:border-brand-500 text-center text-xl font-bold text-brand-700">
-            </div>
-            
-            <div class="flex gap-3">
-                <button onclick="window.closePaymentModal()" class="flex-1 py-3 rounded-xl font-bold text-xs border border-slate-200 hover:bg-slate-50">TUTUP</button>
-                <button onclick="window.savePayment()" class="flex-1 bg-brand-600 hover:bg-brand-700 text-white py-3 rounded-xl font-bold text-xs shadow-lg">TAMBAH BAYARAN</button>
-            </div>
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
+            <h3 class="text-lg font-bold text-slate-800 mb-2">Kemaskini Bayaran</h3>
+            <p class="text-slate-400 text-xs mb-6">Jumlah Perlu Dibayar: <span id="paymentModalTotal" class="font-bold text-slate-800"></span></p>
+            <div class="mb-6"><label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Jumlah Telah Dibayar (RM)</label><input type="number" step="0.01" id="paymentInput" class="w-full bg-slate-50 border-2 border-brand-100 p-4 rounded-xl outline-none focus:border-brand-500 text-center text-2xl font-bold text-brand-700"></div>
+            <div class="flex gap-3"><button onclick="window.closePaymentModal()" class="flex-1 py-3 rounded-xl font-bold text-xs border border-slate-200 hover:bg-slate-50">BATAL</button><button onclick="window.savePayment()" class="flex-1 bg-brand-600 hover:bg-brand-700 text-white py-3 rounded-xl font-bold text-xs shadow-lg">KEMASKINI</button></div>
         </div>
     </div>
-
+    <!-- RECEIPT VIEW -->
     <div id="receiptView" class="hidden fixed inset-0 bg-white z-[90] p-4 md:p-8 overflow-y-auto custom-scrollbar">
         <div class="max-w-2xl mx-auto mb-6 no-print flex justify-between items-center bg-slate-900 text-white p-4 rounded-xl shadow-2xl">
             <button onclick="window.closeReceipt()" class="text-slate-400 hover:text-white font-bold flex items-center text-sm px-2"><i class="fas fa-arrow-left mr-2"></i> TUTUP</button>
             <button onclick="window.printReceipt()" class="bg-white text-slate-900 px-5 py-2 rounded-lg font-bold text-sm shadow hover:bg-slate-100 transition"><i class="fas fa-print mr-2"></i> CETAK / PDF</button>
         </div>
         <div class="max-w-2xl mx-auto border border-slate-200 shadow-xl p-8 md:p-12 bg-white relative print:shadow-none print:border-0" id="receiptContent">
-            <div class="text-center mb-10 border-b-2 border-slate-800 pb-6"><h2 class="text-3xl font-black tracking-tighter uppercase text-slate-900">SK Masjid Tanah</h2><p class="text-xs font-bold text-slate-500 uppercase tracking-[0.3em] mt-1">Prasekolah Lavender 2026</p></div>
-            <div class="flex justify-between items-end mb-8"><div><h3 class="text-4xl font-black text-brand-600 uppercase tracking-tighter" id="doc-title">INVOIS</h3><p class="text-xs text-slate-400 font-mono mt-1">ID: <span id="r-id" class="text-slate-800 font-bold"></span></p></div><div class="text-right"><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tarikh</p><p class="font-bold text-slate-800" id="r-date"></p></div></div>
-            <div class="bg-slate-50 p-6 rounded-lg mb-8 border border-slate-100 grid grid-cols-2 gap-6 uppercase"><div><p class="text-[10px] font-bold text-slate-400 mb-1">Nama Murid</p><p class="font-bold text-lg text-slate-800 leading-tight" id="r-name"></p></div><div><p class="text-[10px] font-bold text-slate-400 mb-1">Nama Penjaga</p><p class="font-medium text-slate-700" id="r-parent"></p></div></div>
-            <table class="w-full text-sm mb-10"><thead><tr class="border-b-2 border-slate-800 text-xs font-bold uppercase text-slate-600"><th class="py-3 text-left">Perincian</th><th class="py-3 text-center w-24">Harga</th><th class="py-3 text-center w-16">Unit</th><th class="py-3 text-right w-24">Jum</th></tr></thead><tbody id="r-body" class="divide-y divide-slate-100"></tbody></table>
-            <div class="flex justify-end"><div class="w-1/2"><div class="flex justify-between py-2 border-b border-slate-100"><span class="font-bold text-slate-500 text-xs uppercase">Jumlah Besar</span><span class="font-bold text-slate-800" id="r-total">RM 0.00</span></div><div class="flex justify-between py-2 border-b border-slate-100"><span class="font-bold text-slate-500 text-xs uppercase">Telah Dibayar</span><span class="font-bold text-emerald-600" id="r-paid">RM 0.00</span></div><div class="flex justify-between py-4"><span class="font-black text-slate-800 text-sm uppercase" id="r-balance-label">Baki</span><span class="font-black text-2xl text-red-600" id="r-balance">RM 0.00</span></div></div></div>
+            <div class="text-center mb-10 border-b-2 border-slate-800 pb-6">
+                <h2 class="text-3xl font-black tracking-tighter uppercase text-slate-900">SK Masjid Tanah</h2>
+                <p class="text-xs font-bold text-slate-500 uppercase tracking-[0.3em] mt-1">Prasekolah Lavender 2026</p>
+            </div>
+            <div class="flex justify-between items-end mb-8">
+                <div><h3 class="text-4xl font-black text-brand-600 uppercase tracking-tighter" id="doc-title">INVOIS</h3><p class="text-xs text-slate-400 font-mono mt-1">ID: <span id="r-id" class="text-slate-800 font-bold"></span></p></div>
+                <div class="text-right"><p class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tarikh</p><p class="font-bold text-slate-800" id="r-date"></p></div>
+            </div>
+            <div class="bg-slate-50 p-6 rounded-lg mb-8 border border-slate-100 grid grid-cols-2 gap-6 uppercase">
+                <div><p class="text-[10px] font-bold text-slate-400 mb-1">Nama Murid</p><p class="font-bold text-lg text-slate-800 leading-tight" id="r-name"></p></div>
+                <div><p class="text-[10px] font-bold text-slate-400 mb-1">Nama Penjaga</p><p class="font-medium text-slate-700" id="r-parent"></p></div>
+            </div>
+            <table class="w-full text-sm mb-10">
+                <thead><tr class="border-b-2 border-slate-800 text-xs font-bold uppercase text-slate-600"><th class="py-3 text-left">Perincian</th><th class="py-3 text-center w-24">Harga</th><th class="py-3 text-center w-16">Unit</th><th class="py-3 text-right w-24">Jum</th></tr></thead>
+                <tbody id="r-body" class="divide-y divide-slate-100"></tbody>
+            </table>
+            <div class="flex justify-end">
+                <div class="w-1/2">
+                    <div class="flex justify-between py-2 border-b border-slate-100"><span class="font-bold text-slate-500 text-xs uppercase">Jumlah Besar</span><span class="font-bold text-slate-800" id="r-total">RM 0.00</span></div>
+                    <div class="flex justify-between py-2 border-b border-slate-100"><span class="font-bold text-slate-500 text-xs uppercase">Telah Dibayar</span><span class="font-bold text-emerald-600" id="r-paid">RM 0.00</span></div>
+                    <div class="flex justify-between py-4"><span class="font-black text-slate-800 text-sm uppercase" id="r-balance-label">Baki</span><span class="font-black text-2xl text-red-600" id="r-balance">RM 0.00</span></div>
+                </div>
+            </div>
         </div>
     </div>
     <div id="mobileActionBar" class="hidden md:hidden fixed bottom-0 left-0 w-full bg-white border-t p-4 z-40 flex justify-between items-center shadow-lg no-print">
