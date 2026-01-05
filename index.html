@@ -104,6 +104,7 @@
         };
 
         window.isNametagItem = (name) => {
+            if(!name) return false;
             const n = name.toUpperCase();
             return n.includes('NAMETAG') || n.includes('TAG NAMA');
         };
@@ -185,7 +186,6 @@
             const newState = !window.isSystemOpen;
             try {
                 await setDoc(configDocRef, { isSystemOpen: newState }, { merge: true });
-                // UI updates via onSnapshot listener
             } catch(e) { alert("Gagal kemaskini status: " + e.message); }
         };
 
@@ -313,10 +313,30 @@
             // Render Items A (WAJIB - FIXED 1 UNIT)
             if(window.itemsA.length) {
                 tA.innerHTML = window.itemsA.map((i, idx) => {
-                    // Force quantity to 1. But allow calcAll to pick it up via hidden input.
+                    const currentQty = window.cartState[i.id] || 0;
+                    // FIX: Check nametag status for Item A too!
+                    const isTag = i.isNametag || window.isNametagItem(i.name);
+                    
                     return `
                     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
-                        <td class="p-4"><span class="text-xs font-bold text-slate-400 mr-2">${idx + 1}.</span><span class="font-medium text-slate-700 uppercase">${i.name}</span></td>
+                        <td class="p-4">
+                            <div class="flex flex-col">
+                                <div class="flex items-center">
+                                    <span class="text-xs font-bold text-slate-400 mr-2">${idx + 1}.</span>
+                                    <span class="font-medium text-slate-700 uppercase">${i.name}</span>
+                                </div>
+                                ${isTag ? `
+                                    <div id="tagInput-${i.id}" class="mt-3 bg-blue-50 p-3 rounded-lg border border-blue-100 animate-fadeUp">
+                                        <label class="text-[10px] font-bold text-blue-600 uppercase mb-1 block">Nama Pada Tag (Wajib)</label>
+                                        <input type="text" id="tagNameInput-${i.id}" maxlength="12" oninput="window.updateCharCount(this)" class="w-full border border-blue-200 p-2 text-sm rounded uppercase font-bold text-slate-700 focus:outline-none focus:border-blue-500" placeholder="ALI BIN ABU">
+                                        <div class="flex justify-between mt-1">
+                                            <span class="text-[9px] text-blue-400">* Termasuk jarak</span>
+                                            <span id="charCount-${i.id}" class="text-[9px] font-bold text-slate-400">0/12</span>
+                                        </div>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </td>
                         <td class="p-4 text-center text-sm text-slate-500">RM ${i.price.toFixed(2)}</td>
                         <td class="p-4 text-center">
                              <input type="hidden" value="1" data-id="${i.id}" data-price="${i.price}" class="qty-input" onchange="window.calcAll()">
@@ -330,7 +350,7 @@
             // Render Items B (PILIHAN - EDITABLE)
             if(window.itemsB.length) {
                 tB.innerHTML = window.itemsB.map(i => {
-                    const isTag = window.isNametagItem(i.name);
+                    const isTag = i.isNametag || window.isNametagItem(i.name);
                     const currentQty = window.cartState[i.id] || 0;
                     return `
                     <tr class="border-b border-slate-100 hover:bg-slate-50 transition">
@@ -370,7 +390,15 @@
             
             if (window.itemsA.length > 0) {
                 tbody.innerHTML += `<tr><td colspan="3" class="bg-slate-50 p-2 text-[10px] font-bold text-slate-400 uppercase tracking-wider">Item Wajib</td></tr>`;
-                window.itemsA.forEach(i => { tbody.innerHTML += `<tr class="border-b border-slate-50 text-sm"><td class="py-2 pl-2 uppercase">${i.name}</td><td class="py-2 text-center">1</td><td class="py-2 pr-2 text-right font-medium">RM ${i.price.toFixed(2)}</td></tr>`; });
+                window.itemsA.forEach(i => { 
+                    const qty = window.cartState[i.id] || 1; // Default to 1 if missing for A
+                    let meta = '';
+                    if(i.isNametag || window.isNametagItem(i.name)) {
+                         const val = document.getElementById(`tagNameInput-${i.id}`)?.value.toUpperCase() || 'TIADA NAMA';
+                         meta = `<div class="text-[10px] text-purple-600 font-bold bg-purple-50 inline-block px-2 py-0.5 rounded border border-purple-100 mt-1"><i class="fas fa-tag mr-1"></i> ${val}</div>`;
+                    }
+                    tbody.innerHTML += `<tr class="border-b border-slate-50 text-sm"><td class="py-2 pl-2 uppercase"><div>${i.name}</div>${meta}</td><td class="py-2 text-center">${qty}</td><td class="py-2 pr-2 text-right font-medium">RM ${(i.price * qty).toFixed(2)}</td></tr>`; 
+                });
             }
             
             const selectedItemsB = window.itemsB.filter(i => window.cartState[i.id] > 0);
@@ -379,7 +407,7 @@
                 selectedItemsB.forEach(item => {
                     const qty = window.cartState[item.id];
                     let meta = '';
-                    if(window.isNametagItem(item.name)) {
+                    if(item.isNametag || window.isNametagItem(item.name)) {
                         const val = document.getElementById(`tagNameInput-${item.id}`)?.value.toUpperCase() || 'TIADA NAMA';
                         meta = `<div class="text-[10px] text-purple-600 font-bold bg-purple-50 inline-block px-2 py-0.5 rounded border border-purple-100 mt-1"><i class="fas fa-tag mr-1"></i> ${val}</div>`;
                     }
@@ -414,17 +442,41 @@
             }
 
             let items = {};
-            Object.entries(window.cartState).forEach(([id, qty]) => { if(qty > 0) items[id] = qty; });
+            // Gather all items from cartState (Includes A which has quantity 1 by default logic if displayed)
+            // But we must iterate all available items because calcAll might not have run for hidden inputs
+            
+            // Re-verify quantities
+            [...window.itemsA, ...window.itemsB].forEach(i => {
+                const inp = document.querySelector(`.qty-input[data-id="${i.id}"]`);
+                if(inp) {
+                    const q = parseInt(inp.value) || 0;
+                    if(q > 0) items[i.id] = q;
+                } else if (window.itemsA.find(a => a.id === i.id)) {
+                    // Force Include Item A if input missing (it should be there though)
+                    items[i.id] = 1;
+                }
+            });
 
-            const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name));
+            // FIX: Check ALL items for nametag requirement
+            const allItems = [...window.itemsA, ...window.itemsB];
+            const tagItems = allItems.filter(i => i.isNametag || window.isNametagItem(i.name));
             let tagName = "";
 
             for(let t of tagItems) {
                 if(items[t.id]) {
-                    tagName = document.getElementById(`tagNameInput-${t.id}`).value.toUpperCase().trim();
-                    if(!tagName) { btn.innerHTML = originalText; btn.disabled = false; alert("Sila isi NAMA PADA TAG untuk " + t.name); return; }
-                    if(tagName.length > 12) { btn.innerHTML = originalText; btn.disabled = false; alert("Nama tag max 12 huruf."); return; }
-                    break; 
+                    // It's in the order
+                    const inputEl = document.getElementById(`tagNameInput-${t.id}`);
+                    if(inputEl) {
+                        tagName = inputEl.value.toUpperCase().trim();
+                        if(!tagName) { btn.innerHTML = originalText; btn.disabled = false; alert("Sila isi NAMA PADA TAG untuk " + t.name); return; }
+                        if(tagName.length > 12) { btn.innerHTML = originalText; btn.disabled = false; alert("Nama tag max 12 huruf."); return; }
+                        // Stop after finding first nametag? Or allow multiple? 
+                        // Current logic assumes 1 nametag per student usually. 
+                        // If multiple nametags, this logic overwrites 'tagName'. 
+                        // Ideally store tagName in items object but structure is flattened.
+                        // For now, keep as is (single tagName field).
+                        break; 
+                    }
                 }
             }
             
@@ -436,24 +488,21 @@
             try {
                 let ref;
                 if (window.editingOrderId) {
-                    // Update Existing Order
                     ref = doc(db, 'book_orders', window.editingOrderId);
                     await updateDoc(ref, orderData);
                     const snap = await getDoc(ref);
                     orderData = { id: snap.id, ...snap.data() };
                     alert("Tempahan berjaya dikemaskini.");
-                    await window.sendTelegramNotification(orderData); // NOTIFIKASI UNTUK UPDATE
+                    await window.sendTelegramNotification(orderData); 
                 } else {
-                    // Create New Order
                     orderData.date = new Date().toLocaleDateString('ms-MY');
                     orderData.paid = 0;
                     orderData.tagStatus = false;
                     orderData.paymentLogs = [];
-                    // Add default Verified flag as false
                     orderData.adminVerified = false;
                     ref = await addDoc(ordersColl, orderData);
                     orderData.id = ref.id;
-                    await window.sendTelegramNotification(orderData); // NOTIFIKASI UNTUK NEW
+                    await window.sendTelegramNotification(orderData); 
                 }
                 
                 window.currentReceipt = orderData;
@@ -473,14 +522,12 @@
              if(confirm("Adakah anda pasti ingin mengesahkan tempahan ini?\nIbu bapa tidak akan dapat mengemaskini tempahan selepas ini.")) {
                  try {
                      await updateDoc(doc(db, 'book_orders', id), { adminVerified: true });
-                     // UI updates automatically via onSnapshot
                  } catch(e) { alert("Ralat: " + e.message); }
              }
         };
 
         // --- EDIT ORDER LOGIC ---
         window.editOrder = (data) => {
-            // Check if allowed (Not Paid AND Not Verified)
             if ((data.paid || 0) > 0 || data.tagStatus === true || data.adminVerified === true) {
                 alert("Maaf, tempahan ini telah disahkan oleh Admin dan tidak boleh diubah lagi. Sila hubungi pihak sekolah.");
                 return;
@@ -500,7 +547,9 @@
                 window.renderUserForm();
                 
                 setTimeout(() => {
-                    const tagItems = window.itemsB.filter(i => window.isNametagItem(i.name));
+                    const allItems = [...window.itemsA, ...window.itemsB];
+                    const tagItems = allItems.filter(i => i.isNametag || window.isNametagItem(i.name));
+                    
                     for(let t of tagItems) {
                         if(window.cartState[t.id]) {
                             const inputEl = document.getElementById(`tagNameInput-${t.id}`);
@@ -511,7 +560,7 @@
                         }
                     }
                     window.calcAll(); 
-                }, 100);
+                }, 500); // Increased timeout to ensure DOM ready
 
                 window.safeNavigate('section-info');
             }
@@ -534,7 +583,7 @@
                     const d = doc.data();
                     const baki = d.total - (d.paid || 0);
                     const statusClass = baki <= 0 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700';
-                    const isEditable = (d.paid || 0) === 0 && d.adminVerified !== true; // Logic baru edit
+                    const isEditable = (d.paid || 0) === 0 && d.adminVerified !== true; 
 
                     const dataObj = {id: doc.id, ...d};
                     const dataStr = JSON.stringify(dataObj).replace(/"/g, '&quot;');
@@ -576,13 +625,27 @@
             
             const tb = document.getElementById('r-body');
             tb.innerHTML = '';
-            window.itemsA.forEach(i => { tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${i.name}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">1</td><td class="border-b py-2 text-right">${i.price.toFixed(2)}</td></tr>`; });
+            
+            // Note: If edit mode logic changes item structure, this handles display
+            // We iterate A then B to show order
+            
+            window.itemsA.forEach(i => { 
+                // Always check quantity in data.items just in case, but default 1 for A
+                const q = data.items && data.items[i.id] ? data.items[i.id] : 1; 
+                // FIX: Check if nametag
+                const isTag = i.isNametag || window.isNametagItem(i.name);
+                let n = i.name;
+                if(isTag && data.tagName) n+=` (${data.tagName})`;
+
+                tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${n}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">${q}</td><td class="border-b py-2 text-right">${(i.price*q).toFixed(2)}</td></tr>`; 
+            });
+
             if(data.items) {
                 Object.entries(data.items).forEach(([id, qty]) => {
                     const i = window.itemsB.find(x => x.id === id);
                     if(i) {
                         let n = i.name; 
-                        if(window.isNametagItem(i.name) && data.tagName) n+=` (${data.tagName})`;
+                        if((i.isNametag || window.isNametagItem(i.name)) && data.tagName) n+=` (${data.tagName})`;
                         tb.innerHTML += `<tr><td class="border-b py-2 uppercase">${n}</td><td class="border-b py-2 text-center">${i.price.toFixed(2)}</td><td class="border-b py-2 text-center">${qty}</td><td class="border-b py-2 text-right">${(i.price*qty).toFixed(2)}</td></tr>`;
                     }
                 });
@@ -641,7 +704,8 @@
         
         window.exportNametagCsv = () => {
              const data = [["Nama Murid", "Teks Tag", "Status"]];
-             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+             // FIX: Check ALL items
+             const tagItems = [...window.itemsA, ...window.itemsB].filter(i => i.isNametag || window.isNametagItem(i.name)).map(i => i.id);
              window.orders.forEach(o => {
                  if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
                      data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, o.tagStatus ? "SIAP" : "PROSES"]);
@@ -654,7 +718,8 @@
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
             doc.text("Laporan Tempahan Nametag", 14, 20);
-            const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+            // FIX: Check ALL items
+            const tagItems = [...window.itemsA, ...window.itemsB].filter(i => i.isNametag || window.isNametagItem(i.name)).map(i => i.id);
             const body = window.orders
                 .filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)))
                 .map(o => [o.name, o.tagName || '-', o.tagStatus ? "SIAP" : "PROSES"]);
@@ -689,11 +754,17 @@
         };
 
         window.renderAdminDashboard = () => {
-             let rev=0, pend=0;
-             window.orders.forEach(o => { rev += (o.paid||0); if(o.total > (o.paid||0)) pend += (o.total - (o.paid||0)); });
+             let rev=0, pend=0, tags=0;
+             const tagItems = [...window.itemsA, ...window.itemsB].filter(i => i.isNametag || window.isNametagItem(i.name)).map(i => i.id);
+             window.orders.forEach(o => { 
+                 rev += (o.paid||0); 
+                 if(o.total > (o.paid||0)) pend += (o.total - (o.paid||0)); 
+                 if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) tags++;
+             });
              document.getElementById('d-revenue').innerText = `RM ${rev.toFixed(2)}`;
              document.getElementById('d-count').innerText = window.orders.length;
              document.getElementById('d-pending').innerText = `RM ${pend.toFixed(2)}`;
+             document.getElementById('d-tags').innerText = tags;
              
              const ctx = document.getElementById('chartPayment');
              if(ctx) {
@@ -768,7 +839,8 @@
         window.renderAdminNametags = () => {
              const tb = document.getElementById('adm-tag-body');
              if(!tb) return;
-             const tagItems = window.itemsB.filter(i => i.isNametag).map(i => i.id);
+             // FIX: Include itemsA as well and use helper
+             const tagItems = [...window.itemsA, ...window.itemsB].filter(i => i.isNametag || window.isNametagItem(i.name)).map(i => i.id);
              const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)));
              tb.innerHTML = list.length ? list.map(o => `
                 <tr class="border-b hover:bg-purple-50 text-sm">
