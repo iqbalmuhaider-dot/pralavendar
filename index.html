@@ -703,12 +703,13 @@
         };
         
         window.exportNametagCsv = () => {
-             const data = [["Nama Murid", "Teks Tag", "Status"]];
-             // FIX: Check ALL items
+             const data = [["Nama Murid", "Teks Tag", "Kuantiti", "Status"]]; // Added Kuantiti header
              const tagItems = [...window.itemsA, ...window.itemsB].filter(i => i.isNametag || window.isNametagItem(i.name)).map(i => i.id);
              window.orders.forEach(o => {
                  if(o.items && Object.keys(o.items).some(k => tagItems.includes(k))) {
-                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, o.tagStatus ? "SIAP" : "PROSES"]);
+                     let qty = 0;
+                     Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
+                     data.push([`"${o.name}"`, `"${o.tagName||'-'}"`, qty, o.tagStatus ? "SIAP" : "PROSES"]);
                  }
              });
              window.generateCSV(data, "Laporan_Nametag.csv");
@@ -718,12 +719,15 @@
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF();
             doc.text("Laporan Tempahan Nametag", 14, 20);
-            // FIX: Check ALL items
             const tagItems = [...window.itemsA, ...window.itemsB].filter(i => i.isNametag || window.isNametagItem(i.name)).map(i => i.id);
             const body = window.orders
                 .filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)))
-                .map(o => [o.name, o.tagName || '-', o.tagStatus ? "SIAP" : "PROSES"]);
-            doc.autoTable({ head: [['Nama Murid', 'Teks Tag', 'Status']], body: body, startY: 30 });
+                .map(o => {
+                    let qty = 0;
+                    Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
+                    return [o.name, o.tagName || '-', qty, o.tagStatus ? "SIAP" : "PROSES"];
+                });
+            doc.autoTable({ head: [['Nama Murid', 'Teks Tag', 'Kuantiti', 'Status']], body: body, startY: 30 }); // Added Kuantiti header
             doc.save("Laporan_Nametag.pdf");
         };
 
@@ -842,13 +846,17 @@
              // FIX: Include itemsA as well and use helper
              const tagItems = [...window.itemsA, ...window.itemsB].filter(i => i.isNametag || window.isNametagItem(i.name)).map(i => i.id);
              const list = window.orders.filter(o => o.items && Object.keys(o.items).some(k => tagItems.includes(k)));
-             tb.innerHTML = list.length ? list.map(o => `
+             tb.innerHTML = list.length ? list.map(o => {
+                let qty = 0;
+                Object.keys(o.items).forEach(k => { if(tagItems.includes(k)) qty += o.items[k]; });
+                return `
                 <tr class="border-b hover:bg-purple-50 text-sm">
                     <td class="p-3 uppercase font-medium">${o.name}</td>
                     <td class="p-3 font-bold uppercase text-purple-700">${o.tagName||'-'}</td>
+                    <td class="p-3 text-center font-bold">${qty}</td> <!-- Added Quantity Cell -->
                     <td class="p-3 text-center"><button onclick="window.updateTagStatus('${o.id}', ${o.tagStatus})" class="px-2 py-1 rounded text-[10px] font-bold text-white ${o.tagStatus?'bg-green-500':'bg-amber-500'}">${o.tagStatus?'SIAP':'PROSES'}</button></td>
                 </tr>
-             `).join('') : '<tr><td colspan="3" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
+             `}).join('') : '<tr><td colspan="4" class="p-6 text-center text-slate-400">Tiada tempahan nametag.</td></tr>';
         };
 
         window.renderAdminLogs = () => {
@@ -1236,7 +1244,7 @@
                         <button onclick="window.exportNametagPdf()" class="bg-red-600 text-white px-4 py-2 rounded-lg text-xs font-bold shadow-sm hover:bg-red-700">PDF</button>
                     </div>
                 </div>
-                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Status</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
+                <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden"><table class="w-full text-sm text-left"><thead class="bg-purple-50 text-purple-900 border-b border-purple-100 font-bold text-xs uppercase"><tr><th class="p-4">Nama Murid</th><th class="p-4">Teks Pada Tag</th><th class="p-4 text-center">Kuantiti</th><th class="p-4 text-center">Status</th></tr></thead><tbody id="adm-tag-body" class="divide-y divide-slate-100"></tbody></table></div>
             </div>
             <div id="adm-log" class="hidden admin-tab animate-fadeUp">
                 <h2 class="text-2xl font-bold text-slate-800 mb-6">Log Aktiviti</h2>
